@@ -1,3 +1,6 @@
+# This program takes an input image and computes clusters of the most dominant colors as defined by the user
+# It saves the clusters into a csv file along with the HSV and hue information
+
 from sklearn.cluster import KMeans
 import matplotlib.pyplot as plt
 import argparse
