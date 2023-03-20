@@ -360,6 +360,14 @@ if __name__ == "__main__":
 
     dirs = args['dir']
     fr = 0
+
+    if(os.path.exists(dirs+"/.DS_STORE")):
+        print("True")
+        os.remove(dirs+"/.DS_STORE")
+    else:
+        print("False")
+
+
     for contentFolder in sorted(os.listdir(dirs), key=get_number):
         filepath = 'OutCSV/'
         if not os.path.exists(filepath): os.makedirs(filepath)
