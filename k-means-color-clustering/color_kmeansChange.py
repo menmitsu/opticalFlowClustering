@@ -8,7 +8,7 @@ import utils
 import cv2
 import numpy as np
 import csv,os
-
+import re
 import colorsys
 
 def parse_arguments():
@@ -16,7 +16,7 @@ def parse_arguments():
     Parse command-line arguments and return them as a dictionary.
     """
     ap = argparse.ArgumentParser()
-    ap.add_argument("-i", "--image", required=True,
+    ap.add_argument("-d", "--dir", required=True,
                     help="Path to the image")
     ap.add_argument("-c", "--clusters", required=True, type=int,
                     help="# of clusters")
@@ -57,7 +57,7 @@ def cluster_colors(image, n_clusters, image_path,csv_file):
     resulting color bar image as a NumPy array.
     """
 
-    print(image.shape)
+    # print(image.shape)
 
     # # # Filter out pixels with alpha value of 0
     # image = image[image[:, :, 3] > 0]
@@ -72,7 +72,7 @@ def cluster_colors(image, n_clusters, image_path,csv_file):
     
     # bar = utils.plot_colors(hist, clt.cluster_centers_)
 
-    print("Centroid clusters:",clt.cluster_centers_)
+    # print("Centroid clusters:",clt.cluster_centers_)
 
     # get labels for all points
     labels = clt.predict(flattened_image)
@@ -82,7 +82,7 @@ def cluster_colors(image, n_clusters, image_path,csv_file):
 
 
 
-    print("Label",labels)
+    # print("Label",labels)
 
      # Get percentages of each cluster and sort by percentage
     label_percentages = label_counts.astype(float) / len(flattened_image)
@@ -98,7 +98,8 @@ def cluster_colors(image, n_clusters, image_path,csv_file):
     # Print the sorted list of tuples
     for label_percentage, label_name, cluster_center in label_info:
         # print(f"{label_name}: {label_percentage*100:.2f}%\nCluster Center: {np.round(cluster_center,decimals=2)}\n")
-        print(f"{label_name}: {label_percentage*100:.2f}%\nCluster Center: {np.rint(cluster_center)}\n")
+        # print(f"{label_name}: {label_percentage*100:.2f}%\nCluster Center: {np.rint(cluster_center)}\n")
+        pass
 
 
     # Save top 2 cluster centers to CSV file
@@ -120,29 +121,42 @@ def cluster_colors(image, n_clusters, image_path,csv_file):
         # Convert RGB to HSV using OpenCV
         hsv0 = cv2.cvtColor(rgb0, cv2.COLOR_BGR2HSV)
 
-        print(rgb0)
+        # print(rgb0)
 
         # hsv1 = cv2.cvtColor(rgb1, cv2.COLOR_BGR2HSV)
 
         # print("HSVs",hsv0[0][0],"  ",hsv1[0][0])
-        print("HSVs",hsv0[0][0])
+        # print("HSVs",hsv0[0][0])
 
         # hsv1 = cv2.cvtColor([[ [r1, g1, b1] ]], cv2.COLOR_RGB2HSV)
 
         # writer.writerow([os.path.basename(image_path), clusters[0], clusters[1], hsv0,hsv1,hsv0[0][0][0],hsv1[0][0][0]])
-        writer.writerow([os.path.basename(image_path), clusters[0], hsv0,hsv0[0][0][0]])
+        # writer.writerow([os.path.basename(image_path), clusters[0], hsv0,hsv0[0][0][0]])
+        writer.writerow([image_path, clusters[0], hsv0,hsv0[0][0][0]])
 
     return None
 
+def get_number(filename):
+    pattern = re.compile(r'(\d+)')
+    match = pattern.search(filename)
+    if match:
+        return int(match.group(1))
+    else:
+        return None
+
 if __name__ == "__main__":
     args = parse_arguments()
-    image = read_image(args["image"])
+    dirs = args['dir']
+    for contentFolder in sorted(os.listdir(dirs), key=get_number):
+        for img_path in sorted(os.listdir(dirs+contentFolder), key=get_number):
+            image = read_image(dirs+contentFolder+'/'+img_path)
 
-    print("\n\n\n Image Name",args["image"])
-    processed_image = preprocess_image(image)
+            # print("\n\n\n Image Name",args["image"])
+            processed_image = preprocess_image(image)
 
-    print("Dimensions",processed_image.ndim)
-    bar = cluster_colors(processed_image, args["clusters"],args["image"],args["csv"])
+            # print("Dimensions",processed_image.ndim)
+            bar = cluster_colors(processed_image, args["clusters"], contentFolder+'/'+img_path, args["csv"])
+        print(contentFolder)
     
     # fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10,5))
     # ax1.imshow(image)
@@ -151,3 +165,9 @@ if __name__ == "__main__":
     # ax2.axis("off")
     
     # plt.show()
+
+# python .\color_kmeans.py -i images\601_3_50x50\0001.png -c 1 -f add.csv
+# python .\color_kmeans.py -d OutImgs\ -c 1 -f add.csv
+# python .\color_kmeans.py -d OutImgs\ -c 1 -f add.csv
+
+# python -W ignore .\color_kmeans.py -d OutImgs\video_lq\ -c 1 -f add.csv

@@ -64,3 +64,5 @@ for i in range(larger_len - smaller_len + 1):
 print("Maximum cosine similarity:", max_similarity)
 print("Minimum sum of squared differences:", min_euclidean)
 print("Max frame:",max_frame)
+
+# python findCosineDifferentVectors.py bounce.csv cropped_trimmed2.csv

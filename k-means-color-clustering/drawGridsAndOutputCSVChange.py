@@ -7,6 +7,8 @@ import matplotlib
 import argparse
 import colorsys
 
+from computeOpticalFlowModule import ComputeOpticalFLow
+
 
 def load_yolo_bounding_boxes(yolo_bounding_box_file):
     # Load the rows of numbers from the yolo text-file
@@ -44,7 +46,7 @@ def load_contours(inputVideoFile, frameNum, frame):
                     cv2.drawContours(frame, [points], -1, (255, 255, 255), thickness=2)
                     cv2.fillPoly(frame, pts =[points], color=(0,0,0))
 
-def overlayGridAndComputeAvgColor(framNum,frame, grid_params,csv_file):
+def overlayGridAndComputeAvgColor(framNum,frame, grid_params,csv_file,inputVideoFile):
     height, width = frame.shape[:2]
     aspect_ratio = float(width) / height
     
@@ -91,7 +93,7 @@ def overlayGridAndComputeAvgColor(framNum,frame, grid_params,csv_file):
             avg_hsv_values.append(avg_hsv_value)
             # avg_hsv_values.append(matplotlib.colors.rgb_to_hsv(avg_rgb_value))
 
-            print("RGB:",avg_rgb_value," \nHSV:",avg_hsv_value)
+            # print("RGB:",avg_rgb_value," \nHSV:",avg_hsv_value)
 
 
             # Store the average color in the array
@@ -102,6 +104,10 @@ def overlayGridAndComputeAvgColor(framNum,frame, grid_params,csv_file):
 
             
             cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 255), 1)
+            tm = os.path.basename(inputVideoFile).split('.')[0]
+            pat = f'OutImgs/{tm}/{str(framNum)}'
+            cv2.imwrite(f'{pat}/{cell_idx}.png', grid_roi)
+
             # cv2.rectangle(frame, (x1, y1), (x2, y2), np.mean(grid_roi, axis=(0,1)),-1)
             
     # Draw average RGB value in each grid cell
@@ -136,16 +142,15 @@ def overlayGridAndComputeAvgColor(framNum,frame, grid_params,csv_file):
 
                     
 
-def process_video(yolo_bounding_box_file, inputVideoFile, inputVideoFileExtension,loadYoloBoxes=True,loadContours=True):
+def process_video(yolo_bounding_box_file, inputVideoFile, loadYoloBoxes=True,loadContours=True):
     
-
     if(loadYoloBoxes):
         # Load YOLO bounding boxes
         data = load_yolo_bounding_boxes(yolo_bounding_box_file)
         
     # Load a video 
-    cap = cv2.VideoCapture(inputVideoFile + inputVideoFileExtension)
-    cap_optical_flow=cv2.VideoCapture(inputVideoFile + "_optical"+ inputVideoFileExtension)
+    cap = cv2.VideoCapture(inputVideoFile)
+    # cap_optical_flow=cv2.VideoCapture(inputVideoFile + "_optical"+ inputVideoFileExtension)
 
     outputVideoFileName=inputVideoFile+"_output.mp4"
 
@@ -165,29 +170,34 @@ def process_video(yolo_bounding_box_file, inputVideoFile, inputVideoFileExtensio
     showRGB=False
     showOverlay=True
 
-    grid_params = {'rows': 10, 'cols': 10, 'cell_width': 10, 'cell_height': 100}
+    grid_params = {'rows': 14, 'cols': 25, 'cell_width': 50, 'cell_height': 50}
+    compflow = ComputeOpticalFLow(frame)
 
     while(cap.isOpened()):
         if not paused:
             ret, frame_rgb = cap.read()
-            ret2,frame_optical=cap_optical_flow.read()
+            # ret2,frame_optical=cap_optical_flow.read()
+            frame_optical = compflow.compute(frame_rgb)
 
-            if not ret or not ret2:
+            if not ret:
                 break
 
             frameNum = frameNum + 1
 
-        if showRGB:
-            frame=frame_rgb
-        else:
-            frame=frame_optical
+        # Make folder
+        tm = os.path.basename(inputVideoFile).split('.')[0]
+        dir_path = f'OutImgs/{tm}/{str(frameNum)}'
+        if not os.path.exists(dir_path): os.makedirs(dir_path)
+
+        if showRGB: frame=frame_rgb
+        else: frame=frame_optical
 
         print("\n\n frameNum: ",frameNum)
 
         if(loadYoloBoxes):
             # Draw YOLO bounding boxes
             selectedRow = data[data[:, 0] == frameNum]
-            print(selectedRow)
+            # print(selectedRow)
 
             if np.any(selectedRow):
                 draw_yolo_bounding_box(frame, selectedRow)
@@ -214,12 +224,12 @@ def process_video(yolo_bounding_box_file, inputVideoFile, inputVideoFileExtensio
         #     cap.set(cv2.CAP_PROP_POS_FRAMES, cap.get(cv2.CAP_PROP_POS_FRAMES)+1)
 
         if(showOverlay):
-            overlayGridAndComputeAvgColor(frameNum,frame, grid_params, csv_file="rgb_values.csv")
+            overlayGridAndComputeAvgColor(frameNum,frame, grid_params, csv_file="rgb_values.csv", inputVideoFile=inputVideoFile)
 
         if not paused:
             outputVideo.write(frame)
         
-        cv2.imshow("Image", frame)
+        # cv2.imshow("Image", frame)
 
     cap.release()
     cv2.destroyAllWindows()
@@ -233,20 +243,22 @@ if __name__ == "__main__":
     parser.add_argument('--noyolo', action='store_false', help='do not load yolo bounding boxes')
     # Add a boolean flag for nocontour
     parser.add_argument('--nocontour', action='store_false', help='do not use contour detection')
-
-
+    parser.add_argument("--path", required=True, help="Path to the input video")
 
     # Parse the arguments
     args = parser.parse_args()
 
     # Check if the noyolo flag is set
-    if args.noyolo:
-        print('noyolo flag is set')
-    else:
-        print('noyolo flag is not set')
+    if args.noyolo: print('noyolo flag is set')
+    else: print('noyolo flag is not set')
 
     yolo_bounding_box_file = "yolo_labels.txt"
-    inputVideoFile = "video_lq"
-    inputVideoFileExtension = ".mp4"
+    # inputVideoFile = "video_lq"
+    # inputVideoFileExtension = ".mp4"
     
-    process_video(yolo_bounding_box_file, inputVideoFile, inputVideoFileExtension,args.noyolo,args.nocontour)
+    process_video(yolo_bounding_box_file, args.path, args.noyolo, args.nocontour)
+
+# python drawGridsAndOutputCSV.py --noyolo --nocontour --path video_lq.mp4
+# python -W ignore .\color_kmeans.py -d OutImgs\video_lq\ -c 1 -f add.csv
+
+# python -W ignore 

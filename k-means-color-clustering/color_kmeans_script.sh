@@ -17,3 +17,5 @@ PYTHON_PROGRAM="color_kmeans.py"
 for file in "$IMAGES_DIR"/*; do
     "python3" "$PYTHON_PROGRAM" "-i" "$file" "-c" "1" "-f" "$CSV_FILE"
 done
+
+# python .\color_kmeans.py -i images\601_3_50x50\0001.png -c 1 -f add.csv
