@@ -282,7 +282,7 @@ def preprocess_image(image):
 
     return cv2.merge(rgba, 4)
 
-def cluster_colors(image, n_clusters, image_path,csv_file):
+def cluster_colors(image, n_clusters, image_path, csv_file):
     """
     Cluster the colors in an image using K-means clustering and return the
     resulting color bar image as a NumPy array.
@@ -297,28 +297,15 @@ def cluster_colors(image, n_clusters, image_path,csv_file):
     clt = KMeans(n_clusters=n_clusters)
     clt.fit(flattened_image)
 
-
-    # hist = utils.centroid_histogram(clt)
-    # print(hist)
-    
-    # bar = utils.plot_colors(hist, clt.cluster_centers_)
-
-    # print("Centroid clusters:",clt.cluster_centers_)
-
     # get labels for all points
     labels = clt.predict(flattened_image)
 
     # get counts for each unique label
     label_counts = np.bincount(labels)
 
-
-
-    # print("Label",labels)
-
      # Get percentages of each cluster and sort by percentage
     label_percentages = label_counts.astype(float) / len(flattened_image)
     label_info = []
-    
       
     for i, centroid in enumerate(clt.cluster_centers_):
         label_info.append((label_percentages[i], f"Cluster {i+1}", centroid))
@@ -326,24 +313,17 @@ def cluster_colors(image, n_clusters, image_path,csv_file):
     # Sort the list of tuples by label percentages in descending order
     label_info = sorted(label_info, key=lambda x: x[0], reverse=True)
 
-    # Print the sorted list of tuples
-    for label_percentage, label_name, cluster_center in label_info:
-        # print(f"{label_name}: {label_percentage*100:.2f}%\nCluster Center: {np.round(cluster_center,decimals=2)}\n")
-        # print(f"{label_name}: {label_percentage*100:.2f}%\nCluster Center: {np.rint(cluster_center)}\n")
-        pass
-
-
     # Save top 2 cluster centers to CSV file
     with open(csv_file, 'a', newline='') as file:
         writer = csv.writer(file)
-        if os.stat('cluster_centers.csv').st_size == 0:
-            # writer.writerow(["File name", "Cluster 1", "Cluster 2", "HSV Cluster 1","HSV Cluster 2, Hue 0, Hue 1"])
-            writer.writerow(["File name", "Cluster 1", "HSV Cluster 1","Hue 0"])
+        # if os.stat('cluster_centers.csv').st_size == 0:
+        #     # writer.writerow(["File name", "Cluster 1", "Cluster 2", "HSV Cluster 1","HSV Cluster 2, Hue 0, Hue 1"])
+        #     writer.writerow(["File name", "Cluster 1", "HSV Cluster 1","Hue 0"])
         clusters = []
         for i in range(1):
             clusters.append(np.rint(label_info[i][2]))
 
-        r0, g0, b0,a0 =clusters[0]
+        r0, g0, b0, a0 = clusters[0]
         # r1, g1, b1,a1 =clusters[1]
 
         rgb0 = np.array([[[r0, g0, b0]]], dtype=np.uint8)
@@ -351,21 +331,9 @@ def cluster_colors(image, n_clusters, image_path,csv_file):
 
         # Convert RGB to HSV using OpenCV
         hsv0 = cv2.cvtColor(rgb0, cv2.COLOR_BGR2HSV)
+        # writer.writerow([image_path, clusters[0], hsv0,hsv0[0][0][0]])
 
-        # print(rgb0)
-
-        # hsv1 = cv2.cvtColor(rgb1, cv2.COLOR_BGR2HSV)
-
-        # print("HSVs",hsv0[0][0],"  ",hsv1[0][0])
-        # print("HSVs",hsv0[0][0])
-
-        # hsv1 = cv2.cvtColor([[ [r1, g1, b1] ]], cv2.COLOR_RGB2HSV)
-
-        # writer.writerow([os.path.basename(image_path), clusters[0], clusters[1], hsv0,hsv1,hsv0[0][0][0],hsv1[0][0][0]])
-        # writer.writerow([os.path.basename(image_path), clusters[0], hsv0,hsv0[0][0][0]])
-        writer.writerow([image_path, clusters[0], hsv0,hsv0[0][0][0]])
-
-    return None
+    return clusters[0], hsv0[0][0][0]
 
 def get_number(filename):
     pattern = re.compile(r'(\d+)')
@@ -374,6 +342,7 @@ def get_number(filename):
         return int(match.group(1))
     else:
         return None
+
 
 if __name__ == "__main__":
     args = parse_arguments()
@@ -390,18 +359,33 @@ if __name__ == "__main__":
 
 
     dirs = args['dir']
+    fr = 0
     for contentFolder in sorted(os.listdir(dirs), key=get_number):
-        for img_path in sorted(os.listdir(dirs+contentFolder), key=get_number):
-            image = read_image(dirs+contentFolder+'/'+img_path)
+        filepath = 'OutCSV/'
+        if not os.path.exists(filepath): os.makedirs(filepath)
+        filepathcsv = filepath + str(dirs).split('/')[1] + '.csv'
+        hsv_colors_flat = []
+        fr += 1
+        for img_path in sorted(os.listdir(dirs+'/'+contentFolder), key=get_number):
+            image = read_image(dirs+'/'+contentFolder+'/'+img_path)
 
             # print("\n\n\n Image Name",args["image"])
             processed_image = preprocess_image(image)
 
             # print("Dimensions",processed_image.ndim)
-            bar = cluster_colors(processed_image, args["clusters"], contentFolder+'/'+img_path, args["csv"])
+            cl, hsvVal = cluster_colors(processed_image, args["clusters"], contentFolder+'/'+img_path, args["csv"])
+            hsv_colors_flat.append(hsvVal)
+
+        df = pd.DataFrame(data=[hsv_colors_flat], columns=[f"cell_{i}" for i in range(350)])
+
+        if(fr<2):
+            df.to_csv(filepathcsv, index=False)
+        else:
+            df.to_csv(filepathcsv, mode='a', index=False, header=False)
+
         print(contentFolder)
 
 # python drawGridsAndOutputCSV.py --noyolo --nocontour --path video_lq.mp4
 # python -W ignore .\color_kmeans.py -d OutImgs\video_lq\ -c 1 -f add.csv
 
-# python -W ignore .\KmeanGrids.py -d OutImgs\video_lqmastertrim\ -c 1 -f addnew.csv --noyolo --nocontour --path video_lqmastertrim.mp4
+# python -W ignore .\KmeanGrids.py -d OutImgs\video_lqmastertrim -c 1 -f addnew.csv --noyolo --nocontour --path video_lqmastertrim.mp4
