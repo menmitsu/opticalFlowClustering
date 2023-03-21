@@ -18,5 +18,11 @@ python3 opticalFlow.py -i 601_3.mp4
 # Use only 1 clusters for now
 python3 -W ignore KmeanGrids.py --path 601_bad_bounce_3.mp4 --method "dominantHue"
 python3 -W ignore KmeanGrids.py --path 601_bad_bounce_3.mp4 --method "KMeans"
+python3 -W ignore KmeanGrids.py --path 601_bad_bounce_3.mp4 --method "FaissKMeans"
+
+
+Note: to use Faiss, please install faiss
+pip install faiss-cpu
+
 
 
