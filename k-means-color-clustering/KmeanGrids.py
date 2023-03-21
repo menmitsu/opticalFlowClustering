@@ -10,7 +10,9 @@ import time
 import multiprocessing
 
 from computeOpticalFlowModule import ComputeOpticalFLow
+
 from sklearn.cluster import KMeans
+from faiss_kmeans import FaissKMeans
 
 def preprocess_image(image):
     """
@@ -31,7 +33,7 @@ def preprocess_image(image):
 
     return cv2.merge(rgba, 4)
 
-def cluster_colors(image, n_clusters):
+def cluster_colors(image, n_clusters,method="KMeans"):
     """
     Cluster the colors in an image using K-means clustering and return the
     resulting color bar image as a NumPy array.
@@ -45,26 +47,19 @@ def cluster_colors(image, n_clusters):
 
 
     flattened_image = image.reshape(image.shape[0] * image.shape[1], 4)
-    clt = KMeans(n_clusters=n_clusters,max_iter=1)
-    clt.fit(flattened_image)
 
+    if(method=="KMeans"):
+        clt = KMeans(n_clusters=n_clusters,max_iter=10)
+        clt.fit(flattened_image)
+    elif(method=="FaissKMeans"):
+        clt = FaissKMeans(n_clusters=n_clusters,max_iter=10)
+        clt.fit(flattened_image)
+        
     # get labels for all points
     labels = clt.predict(flattened_image)
-
-    # get counts for each unique label
-    label_counts = np.bincount(labels)
-
-     # Get percentages of each cluster and sort by percentage
-    label_percentages = label_counts.astype(float) / len(flattened_image)
-    label_info = []
-      
-    for i, centroid in enumerate(clt.cluster_centers_):
-        label_info.append((label_percentages[i], f"Cluster {i+1}", centroid))
-
-    # Sort the list of tuples by label percentages in descending order
-    label_info = sorted(label_info, key=lambda x: x[0], reverse=True)
     
-    r0, g0, b0, a0 = np.rint(label_info[0][2])   
+    # print(clt.cluster_centers_[0])
+    r0, g0, b0, a0 = np.rint(clt.cluster_centers_[0])   
 
     rgb0 = np.array([[[r0, g0, b0]]], dtype=np.uint8)
     
@@ -74,6 +69,8 @@ def cluster_colors(image, n_clusters):
         
 
     return hsv0[0][0][0]
+
+
 
 def findDominantColorFromHistogram(hsv_img):
 
@@ -110,7 +107,6 @@ def computeDominantHSVinGrid(framNum,frame, grid_params,csv_file,inputVideoFile,
     # set the number of jobs to use for parallel processing
     num_jobs = multiprocessing.cpu_count()
    
-
     for y in range(grid_params['rows']):
         
         for x in range(grid_params['cols']):
@@ -127,8 +123,13 @@ def computeDominantHSVinGrid(framNum,frame, grid_params,csv_file,inputVideoFile,
             if(method=="dominantHue"):
                 dominant_color_hsv=findDominantColorFromHistogram(grid_roi_hsv)
                 hsv_colors_flat.append(dominant_color_hsv[0][0][0])
+
             elif(method=="KMeans"):
                 hsvVal = cluster_colors(processed_image, 1)
+                hsv_colors_flat.append(hsvVal)
+
+            elif(method=="FaissKMeans"):
+                hsvVal=cluster_colors(processed_image,1,method="FaissKMeans")
                 hsv_colors_flat.append(hsvVal)
                    
             cell_idx += 1
