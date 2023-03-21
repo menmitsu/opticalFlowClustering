@@ -16,5 +16,7 @@ python3 opticalFlow.py -i 601_3.mp4
 
 
 # Use only 1 clusters for now
-python3 color_kmeans.py -i images/601_3_cropped_1_OF/cropped/crop_of0021.png -c 1 
+python3 -W ignore KmeanGrids.py --path 601_bad_bounce_3.mp4 --method "dominantHue"
+python3 -W ignore KmeanGrids.py --path 601_bad_bounce_3.mp4 --method "KMeans"
+
 
