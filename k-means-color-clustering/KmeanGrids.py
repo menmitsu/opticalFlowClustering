@@ -10,6 +10,8 @@ import pandas as pd
 from sklearn.cluster import KMeans
 from computeOpticalFlowModule import ComputeOpticalFLow
 
+image_dict=dict()
+
 # Draw Grids
 def load_yolo_bounding_boxes(yolo_bounding_box_file):
     # Load the rows of numbers from the yolo text-file
@@ -92,8 +94,7 @@ def overlayGridAndComputeAvgColor(framNum,frame, grid_params,csv_file,inputVideo
 
             avg_rgb_values.append(avg_rgb_value)
             avg_hsv_values.append(avg_hsv_value)
-            # avg_hsv_values.append(matplotlib.colors.rgb_to_hsv(avg_rgb_value))
-
+            
             # print("RGB:",avg_rgb_value," \nHSV:",avg_hsv_value)
 
 
@@ -107,39 +108,41 @@ def overlayGridAndComputeAvgColor(framNum,frame, grid_params,csv_file,inputVideo
             cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 255), 1)
             tm = os.path.basename(inputVideoFile).split('.')[0]
             pat = f'OutImgs/{tm}/{str(framNum)}'
-            cv2.imwrite(f'{pat}/{cell_idx}.png', grid_roi)
+            # cv2.imwrite(f'{pat}/{cell_idx}.png', grid_roi)
+
+            image_dict[f'{str(framNum)}/{cell_idx}']=grid_roi
+
 
             # cv2.rectangle(frame, (x1, y1), (x2, y2), np.mean(grid_roi, axis=(0,1)),-1)
             
-    # Draw average RGB value in each grid cell
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.3
-    thickness = 1
-    for i, avg_rgb_value in enumerate(avg_rgb_values):
-        x = (i % grid_params['cols']) * x_step
-        y = (i // grid_params['cols']) * y_step + 10
+    # # Draw average RGB value in each grid cell
+    # font = cv2.FONT_HERSHEY_SIMPLEX
+    # font_scale = 0.3
+    # thickness = 1
+    # for i, avg_rgb_value in enumerate(avg_rgb_values):
+    #     x = (i % grid_params['cols']) * x_step
+    #     y = (i // grid_params['cols']) * y_step + 10
         
-        text = f"({avg_rgb_value[0]:.0f}, {avg_rgb_value[1]:.0f}, {avg_rgb_value[2]:.0f})"
-        text_hsv = f"({avg_hsv_value[0]:.0f}, {avg_hsv_value[1]:.0f}, {avg_hsv_value[2]:.0f})"
+    #     text = f"({avg_rgb_value[0]:.0f}, {avg_rgb_value[1]:.0f}, {avg_rgb_value[2]:.0f})"
+    #     text_hsv = f"({avg_hsv_value[0]:.0f}, {avg_hsv_value[1]:.0f}, {avg_hsv_value[2]:.0f})"
 
-        text_size, _ = cv2.getTextSize(text, font, font_scale, thickness)
-        text_x = x + (x_step - text_size[0]) // 2
-        text_y = y + (y_step - text_size[1]) // 2 + text_size[1]
+    #     text_size, _ = cv2.getTextSize(text, font, font_scale, thickness)
+    #     text_x = x + (x_step - text_size[0]) // 2
+    #     text_y = y + (y_step - text_size[1]) // 2 + text_size[1]
         
-        cv2.putText(frame, text, (text_x, text_y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+    #     cv2.putText(frame, text, (text_x, text_y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
 
-     # Convert the numpy array to a pandas dataframe and write it to a CSV file
-    avg_rgb_colors_flat = np.array([','.join(map(str, cell)) for cell in avg_rgb_colors])
-    avg_hsv_colors_flat = np.array([','.join(map(str, cell)) for cell in avg_hsv_colors])
-    
+    #  # Convert the numpy array to a pandas dataframe and write it to a CSV file
+    # avg_rgb_colors_flat = np.array([','.join(map(str, cell)) for cell in avg_rgb_colors])
+    # avg_hsv_colors_flat = np.array([','.join(map(str, cell)) for cell in avg_hsv_colors])
 
-    df = pd.DataFrame(data=[avg_hsv_colors_flat], columns=[f"cell_{i}" for i in range(num_cells)])
+    # df = pd.DataFrame(data=[avg_hsv_colors_flat], columns=[f"cell_{i}" for i in range(num_cells)])
 
 
-    if(framNum<=2):
-        df.to_csv(csv_file, index=False)
-    else:
-        df.to_csv(csv_file,mode='a', index=False, header=False)
+    # if(framNum<=2):
+    #     df.to_csv(csv_file, index=False)
+    # else:
+    #     df.to_csv(csv_file,mode='a', index=False, header=False)
 
                     
 
@@ -368,6 +371,8 @@ if __name__ == "__main__":
         print("False")
 
 
+    print(len(image_dict))
+
     for contentFolder in sorted(os.listdir(dirs), key=get_number):
         filepath = 'OutCSV/'
         if not os.path.exists(filepath): os.makedirs(filepath)
@@ -375,7 +380,9 @@ if __name__ == "__main__":
         hsv_colors_flat = []
         fr += 1
         for img_path in sorted(os.listdir(dirs+'/'+contentFolder), key=get_number):
-            image = read_image(dirs+'/'+contentFolder+'/'+img_path)
+            # image = read_image(dirs+'/'+contentFolder+'/'+img_path)
+            
+            image=image_dict[f'{str(contentFolder)}/{img_path}']
 
             # print("\n\n\n Image Name",args["image"])
             processed_image = preprocess_image(image)
