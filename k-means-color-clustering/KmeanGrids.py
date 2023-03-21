@@ -10,6 +10,8 @@ import pandas as pd
 from sklearn.cluster import KMeans
 from computeOpticalFlowModule import ComputeOpticalFLow
 
+import time
+
 image_dict=dict()
 
 # Draw Grids
@@ -105,7 +107,8 @@ def overlayGridAndComputeAvgColor(framNum,frame, grid_params,csv_file,inputVideo
             cell_idx += 1
 
             
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 255), 1)
+            # cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 255), 1)
+
             tm = os.path.basename(inputVideoFile).split('.')[0]
             pat = f'OutImgs/{tm}/{str(framNum)}'
             # cv2.imwrite(f'{pat}/{cell_idx}.png', grid_roi)
@@ -285,6 +288,24 @@ def preprocess_image(image):
 
     return cv2.merge(rgba, 4)
 
+def findDominantColorFromHistogram(image):
+
+    # Convert the input image to HSV format
+    hsv_img = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+
+    # Calculate the histogram of the hue channel
+    hue_hist = cv2.calcHist([hsv_img], [0], None, [180], [0, 180])
+
+    # Find the bin with the highest frequency
+    dominant_color_bin = hue_hist.argmax()
+
+    # Convert the bin number to an HSV value
+    dominant_color_hsv = np.array([[[dominant_color_bin, 255, 255]]], dtype=np.uint8)
+    # dominant_color_rgb = cv2.cvtColor(dominant_color_hsv, cv2.COLOR_HSV2BGR)
+
+    print(f"The most dominant color in HSV format is: ",dominant_color_hsv)
+
+
 def cluster_colors(image, n_clusters, image_path, csv_file):
     """
     Cluster the colors in an image using K-means clustering and return the
@@ -371,7 +392,7 @@ if __name__ == "__main__":
         print("False")
 
 
-    print(len(image_dict))
+    # print(len(image_dict))
 
     for contentFolder in sorted(os.listdir(dirs), key=get_number):
         filepath = 'OutCSV/'
@@ -379,7 +400,12 @@ if __name__ == "__main__":
         filepathcsv = filepath + str(dirs).split('/')[1] + '.csv'
         hsv_colors_flat = []
         fr += 1
+
+        start_time = time.time()
+
         for img_path in sorted(os.listdir(dirs+'/'+contentFolder), key=get_number):
+
+
             # image = read_image(dirs+'/'+contentFolder+'/'+img_path)
             img_path=img_path.split('.')[0]
             image=image_dict[f'{str(contentFolder)}/{img_path}']
@@ -388,8 +414,30 @@ if __name__ == "__main__":
             processed_image = preprocess_image(image)
 
             # print("Dimensions",processed_image.ndim)
+          
             cl, hsvVal = cluster_colors(processed_image, args["clusters"], contentFolder+'/'+img_path, args["csv"])
+
+            # hsv_colors_flat.append(hsvVal)
+
+        end_time = time.time()
+
+        print("Time to process ",contentFolder," using k-means =",end_time-start_time,"seconds")
+
+        start_time = time.time()
+
+        for img_path in sorted(os.listdir(dirs+'/'+contentFolder), key=get_number):
+
+
+            img_path=img_path.split('.')[0]
+            image=image_dict[f'{str(contentFolder)}/{img_path}']
+
+            findDominantColorFromHistogram(image)                
+
             hsv_colors_flat.append(hsvVal)
+
+        end_time = time.time()
+
+        print("Time to process ",contentFolder," using histogram =",end_time-start_time,"seconds")
 
         df = pd.DataFrame(data=[hsv_colors_flat], columns=[f"cell_{i}" for i in range(350)])
 
@@ -399,6 +447,11 @@ if __name__ == "__main__":
             df.to_csv(filepathcsv, mode='a', index=False, header=False)
 
         print(contentFolder)
+
+       
+
+        
+
 
 # python drawGridsAndOutputCSV.py --noyolo --nocontour --path video_lq.mp4
 # python -W ignore .\color_kmeans.py -d OutImgs\video_lq\ -c 1 -f add.csv
