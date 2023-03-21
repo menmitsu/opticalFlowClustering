@@ -381,7 +381,7 @@ if __name__ == "__main__":
         fr += 1
         for img_path in sorted(os.listdir(dirs+'/'+contentFolder), key=get_number):
             # image = read_image(dirs+'/'+contentFolder+'/'+img_path)
-            
+            img_path=img_path.split('.')[0]
             image=image_dict[f'{str(contentFolder)}/{img_path}']
 
             # print("\n\n\n Image Name",args["image"])
