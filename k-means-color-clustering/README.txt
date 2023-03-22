@@ -20,7 +20,6 @@ python3 -W ignore KmeanGrids.py --path 601_bad_bounce_3.mp4 --method "dominantHu
 python3 -W ignore KmeanGrids.py --path 601_bad_bounce_3.mp4 --method "KMeans"
 python3 -W ignore KmeanGrids.py --path 601_bad_bounce_3.mp4 --method "FaissKMeans"
 
-
 Note: to use Faiss, please install faiss
 pip install faiss-cpu
 

@@ -88,13 +88,45 @@ def findDominantColorFromHistogram(hsv_img):
 
     return dominant_color_hsv
 
-
-def computeDominantHSVinGrid(framNum,frame, grid_params,csv_file,inputVideoFile,method):
+def drawGridCells(frame,grid_params):
     height, width = frame.shape[:2]
-    aspect_ratio = float(width) / height
+
+    x_step = int(width / grid_params['cols'])
+    y_step = int(height / grid_params['rows'])
+
+    cell_idx = 0
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.4
+    thickness = 1
+
+    for y in range(grid_params['rows']):
+        for x in range(grid_params['cols']):
+            x1 = x * x_step
+            y1 = y * y_step
+            x2 = min(x1 + x_step, width)
+            y2 = min(y1 + y_step, height)
+            
+            grid_roi = frame[y1:y2, x1:x2]
+
+            cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 255), 1)
+            text = f"{cell_idx}"
+
+            x3 = (cell_idx % grid_params['cols']) * x_step
+            y3 = (cell_idx // grid_params['cols']) * y_step + 10
+        
+            text_size, _ = cv2.getTextSize(text, font, font_scale, thickness)
+            text_x = x3 + (x_step - text_size[0]) // 2
+            text_y = y3 + (y_step - text_size[1]) // 2 + text_size[1]
+            
+            cv2.putText(frame, text, (text_x, text_y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+            cell_idx += 1
+
+
+
+def computeOperationInGrid(framNum,frame, grid_params,csv_file,inputVideoFile,method):
+    height, width = frame.shape[:2]
     
-    grid_width = int(aspect_ratio * grid_params['cell_height'] * grid_params['cols'])
-    grid_height = grid_params['cell_height'] * grid_params['rows']
     x_step = int(width / grid_params['cols'])
     y_step = int(height / grid_params['rows'])
 
@@ -142,7 +174,8 @@ def computeDominantHSVinGrid(framNum,frame, grid_params,csv_file,inputVideoFile,
     else:
         df.to_csv(csv_file,mode='a', index=False, header=False)
 
-                    
+def calculateGridParams():
+    print()                    
 
 def process_video(inputVideoFile,method="KMeans"):
     
@@ -155,6 +188,7 @@ def process_video(inputVideoFile,method="KMeans"):
     ret, frame = cap.read()
 
     grid_params = {'rows': 14, 'cols': 25, 'cell_width': 50, 'cell_height': 50}
+
 
     compflow = ComputeOpticalFLow(frame)
 
@@ -173,8 +207,16 @@ def process_video(inputVideoFile,method="KMeans"):
         frameNum = frameNum + 1
 
         key = cv2.waitKey(30) & 0xFF
+
+       
+        # computeOperationInGrid(frameNum,frame_optical, grid_params, csv_file=csvFilePath, inputVideoFile=inputVideoFile,method=method)
+        drawGridCells(frame_rgb,grid_params)
+
+        cv2.imshow("Image",frame_rgb)
         
-        computeDominantHSVinGrid(frameNum,frame_optical, grid_params, csv_file=csvFilePath, inputVideoFile=inputVideoFile,method=method)
+
+        
+
 
     cap.release()
     cv2.destroyAllWindows()
@@ -188,11 +230,16 @@ def parse_arguments():
     ap = argparse.ArgumentParser()
     ap.add_argument("--path", required=True, help="Path to the input video")
     ap.add_argument("--method",required=False,help="KMeans,dominantHue")
+    ap.add_argument("--show",required=False,help="Show image/vid")
+    ap.add_argument("--cell_width",required=False,help="Cell Width")
+    ap.add_argument("--cell_height",required=False,help="Cell Height")
+    
     return vars(ap.parse_args())
 
 if __name__ == "__main__":
     args = parse_arguments()
+    grid_params=calculateGridParams()
 
         
-    process_video(args['path'],args['method'])
+    process_video(args['path'],args['method'],)
 
