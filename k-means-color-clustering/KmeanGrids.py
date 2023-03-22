@@ -8,11 +8,14 @@ import numpy as np
 import pandas as pd
 import time
 import multiprocessing
+import math
 
 from computeOpticalFlowModule import ComputeOpticalFLow
 
 from sklearn.cluster import KMeans
 from faiss_kmeans import FaissKMeans
+
+outputVideosDict={}
 
 def preprocess_image(image):
     """
@@ -108,6 +111,7 @@ def drawGridCells(frame,grid_params):
             y2 = min(y1 + y_step, height)
             
             grid_roi = frame[y1:y2, x1:x2]
+            outputVideosDict[cell_idx].write(grid_roi)
 
             cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 255), 1)
             text = f"{cell_idx}"
@@ -120,9 +124,26 @@ def drawGridCells(frame,grid_params):
             text_y = y3 + (y_step - text_size[1]) // 2 + text_size[1]
             
             cv2.putText(frame, text, (text_x, text_y), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+            
+
+
             cell_idx += 1
 
 
+
+def initializeOutputVideoWriters(grid_params,videoFPS,inputVideoSize):
+
+    num_cells=grid_params['cols']*grid_params['rows']
+    fourcc = cv2.VideoWriter_fourcc('h', '2', '6', '4')
+    video_size=( int(inputVideoSize[0] / grid_params['cols']),int(inputVideoSize[1] / grid_params['rows']) )
+    print(video_size)
+
+    isExist = os.path.exists("OutputVideos")
+    if not os.path.exists('OutputVideos'):
+        os.makedirs('OutputVideos')
+
+    for cell_index in range(num_cells):
+        outputVideosDict[cell_index]=cv2.VideoWriter("OutputVideos/"+str(cell_index)+".mp4",fourcc,videoFPS, video_size)
 
 def computeOperationInGrid(framNum,frame, grid_params,csv_file,inputVideoFile,method):
     height, width = frame.shape[:2]
@@ -174,10 +195,20 @@ def computeOperationInGrid(framNum,frame, grid_params,csv_file,inputVideoFile,me
     else:
         df.to_csv(csv_file,mode='a', index=False, header=False)
 
-def calculateGridParams():
-    print()                    
+def calculateGridParams(inputVideoCap,cell_width,cell_height):
+    grid_params={}
+   
+    grid_params["cell_width"]=cell_width
+    grid_params["cell_height"]=cell_height
 
-def process_video(inputVideoFile,method="KMeans"):
+    print(int(inputVideoCap.get(cv2.CAP_PROP_FRAME_WIDTH)))
+
+    grid_params["cols"]=int(int(inputVideoCap.get(cv2.CAP_PROP_FRAME_WIDTH))/cell_width)
+    grid_params["rows"]=int(inputVideoCap.get(cv2.CAP_PROP_FRAME_HEIGHT)/cell_height)
+
+    return grid_params
+
+def process_video(inputVideoFile,cell_width,cell_height,method="KMeans"):
     
     # Load the video 
     cap = cv2.VideoCapture(inputVideoFile)
@@ -187,12 +218,18 @@ def process_video(inputVideoFile,method="KMeans"):
 
     ret, frame = cap.read()
 
-    grid_params = {'rows': 14, 'cols': 25, 'cell_width': 50, 'cell_height': 50}
+    # grid_params = {'rows': 14, 'cols': 25, 'cell_width': 50, 'cell_height': 50}
 
+    grid_params=calculateGridParams(cap,cell_width,cell_height)
+
+    print("Grid rows",grid_params['rows'])
+    print("Grid cols",grid_params['cols'])
 
     compflow = ComputeOpticalFLow(frame)
 
     csvFilePath="OutCSV/"+str(inputVideoFile).split('.')[0]+".csv"
+
+    initializeOutputVideoWriters(grid_params,cap.get(cv2.CAP_PROP_FPS),(int(cap.get(3)), int(cap.get(4))))
 
     while(cap.isOpened()):
 
@@ -207,21 +244,16 @@ def process_video(inputVideoFile,method="KMeans"):
         frameNum = frameNum + 1
 
         key = cv2.waitKey(30) & 0xFF
-
        
         # computeOperationInGrid(frameNum,frame_optical, grid_params, csv_file=csvFilePath, inputVideoFile=inputVideoFile,method=method)
         drawGridCells(frame_rgb,grid_params)
 
         cv2.imshow("Image",frame_rgb)
-        
-
-        
-
 
     cap.release()
     cv2.destroyAllWindows()
 
-# Color Kmeans
+
 
 def parse_arguments():
     """
@@ -231,15 +263,15 @@ def parse_arguments():
     ap.add_argument("--path", required=True, help="Path to the input video")
     ap.add_argument("--method",required=False,help="KMeans,dominantHue")
     ap.add_argument("--show",required=False,help="Show image/vid")
-    ap.add_argument("--cell_width",required=False,help="Cell Width")
-    ap.add_argument("--cell_height",required=False,help="Cell Height")
+    ap.add_argument("--cell_width",type=int,default=50,required=False,help="Cell Width")
+    ap.add_argument("--cell_height",type=int,default=50,required=False,help="Cell Height")
     
     return vars(ap.parse_args())
 
 if __name__ == "__main__":
     args = parse_arguments()
-    grid_params=calculateGridParams()
+    
 
         
-    process_video(args['path'],args['method'],)
+    process_video(args['path'],args['cell_width'],args['cell_height'],args['method'])
 

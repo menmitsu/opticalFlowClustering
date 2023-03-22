@@ -23,5 +23,6 @@ python3 -W ignore KmeanGrids.py --path 601_bad_bounce_3.mp4 --method "FaissKMean
 Note: to use Faiss, please install faiss
 pip install faiss-cpu
 
-
+# specify cell_width and cell_height 
+python3 -W ignore KmeanGrids.py --path 601_bad_bounce_3.mp4 --method "FaissKMeans" --cell_width 25 --cell_height 25
 
