@@ -163,7 +163,7 @@ def bgr_dilate(img, iterations, kernal_size=5):
     # define the structuring element
     kernel = np.ones((kernal_size, kernal_size), np.uint8)
 
-    # perform erosion for each channel
+    # perform dilation for each channel
     eroded_b = cv2.dilate(b, kernel, iterations=iterations)
     eroded_g = cv2.dilate(g, kernel, iterations=iterations)
     eroded_r = cv2.dilate(r, kernel, iterations=iterations)
@@ -173,10 +173,11 @@ def bgr_dilate(img, iterations, kernal_size=5):
     return eroded_img
 
 
-def process_flow_contours(frame, gamma=2):
+def process_flow_contours(frame, gamma=2, threshold_val=10):
     # Sets the color of all the points inside the detected contours to their mean value and increases gamma
     frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    _, threshold = cv2.threshold(frame_gray, 5, 255, cv2.THRESH_BINARY)
+    _, threshold = cv2.threshold(
+        frame_gray, threshold_val, 255, cv2.THRESH_BINARY)
     contours, _ = cv2.findContours(
         threshold, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
@@ -189,40 +190,35 @@ def process_flow_contours(frame, gamma=2):
         frame[mask == 255] = mean_val
 
 
-def sliding_window(values_list, value, window_size=20):
-    if len(values_list) <= window_size:
-        values_list.append(value)
-    else:
-        values_list.pop(0)
-        values_list.append(value)
+def sliding_window(values, newvalue):
+    values[:-1] = values[1:]
+    values[-1] = newvalue
+
+
+def remove_adjacent_duplicates(data):
+    selection = np.ones(len(data), dtype=bool)
+    selection[1:] = data[1:] != data[:-1]
+    return data[selection]
 
 
 def get_extremas(data):
-    extrema_idxs = []
-    for i in range(len(data)):
-        if i > 0 and i < len(data)-1:
-            if data[i] > data[i-1] and data[i] > data[i+1]:
-                extrema_idxs.append(i)
-
-    return extrema_idxs
-
-
-def remove_continous_duplicates(data):
-    continous_unique_data = []
-    value = -1
-    for i in data:
-        if value != i:
-            continous_unique_data.append(i)
-            value = i
-
-    return continous_unique_data
+    # Remove adjacent duplicates
+    data_adj_dedup = remove_adjacent_duplicates(data)
+    # Create a boolean array indicating whether each element is greater than its neighbors
+    is_extrema = (data_adj_dedup[1:-1] > data_adj_dedup[:-2]
+                  ) & (data_adj_dedup[1:-1] > data_adj_dedup[2:])
+    # Find the indices of the extrema
+    extrema_idxs = np.where(is_extrema)[0] + 1
+    # Find the indices w.r.t data
+    extrema_idxs_wrt_data = np.where(
+        np.isin(data, data_adj_dedup[extrema_idxs]))[0]
+    return extrema_idxs_wrt_data
 
 
-def filter_peaks(max_idx, extremas_idx, windows_size=10):
-    peak_idxs_after_max = extremas_idx[extremas_idx > max_idx]
-    temp_window = peak_idxs_after_max - max_idx
-    peak_idxs_after_max = peak_idxs_after_max[temp_window <= windows_size]
-    return peak_idxs_after_max
+def filter_peaks(max_idx, extremas_idx, peak_distance=10):
+    selection = (extremas_idx > max_idx) & (
+        extremas_idx < max_idx + peak_distance)
+    return extremas_idx[selection]
 
 
 def compute_flow_and_mask_video(input_video_path, model, output_video_path):
@@ -235,14 +231,20 @@ def compute_flow_and_mask_video(input_video_path, model, output_video_path):
     if output_video_path is not None:
         print('Output at: ', output_video_path)
         output_video = cv2.VideoWriter(
-            output_video_path, cv2.VideoWriter_fourcc('a', 'v', 'c', '1'), framerate, (1920, 640))
+            output_video_path, cv2.VideoWriter_fourcc('a', 'v', 'c', '1'), framerate, (1920, 640))  # NOTE: This VideoWriter may not work in linux environments
 
     ret, firstframe = cap.read()
-    firstframe = cv2.resize(firstframe, (640, 640))
+    bbox = ((0, 77), (650, 729))
+    mask = np.zeros(firstframe.shape[:2], dtype=np.uint8)
+    cv2.rectangle(mask, bbox[0], bbox[1], (255, 255, 255), -1)
+    firstframe = cv2.bitwise_and(firstframe, firstframe, mask=mask)
+
     masks = get_masks(firstframe, model)[0]
     compflow = ComputeOpticalFLow(firstframe)
 
-    bgr_values = [[], [], []]
+    window_size = 15
+    bgr_values = [np.zeros(window_size, dtype=np.float32), np.zeros(
+        window_size, dtype=np.float32), np.zeros(window_size, dtype=np.float32)]
 
     fig = plt.figure()
     ax = fig.add_subplot(1, 1, 1)
@@ -252,7 +254,10 @@ def compute_flow_and_mask_video(input_video_path, model, output_video_path):
         if not success:
             break
 
-        frame = cv2.resize(frame, (640, 640))
+        # frame = cv2.resize(frame, (640, 640))
+        frame = cv2.bitwise_and(frame, frame, mask=mask)
+        # frame = frame[bbox[0][1]:bbox[1][1],bbox[0][0]:bbox[1][0]]
+
         key = cv2.waitKey(1) & 0xff
         ax.clear()
         opflowimg = compflow.compute(frame)
@@ -262,10 +267,16 @@ def compute_flow_and_mask_video(input_video_path, model, output_video_path):
         for ctr in masks:
             cv2.drawContours(opflowimg, [ctr], -1, (0, 0, 0), cv2.FILLED)
 
-        cv2.imshow('m-flow', opflowimg)
+        opflowimg[opflowimg <= 35] = 0
 
-        opflowimg = bgr_erode(opflowimg, iterations=5, kernal_size=15)
-        opflowimg = bgr_dilate(opflowimg, iterations=15, kernal_size=5)
+        # opflowimg = bgr_erode(opflowimg, iterations=9, kernal_size=5)
+        # opflowimg = bgr_dilate(opflowimg, iterations=4, kernal_size=9)
+
+        # opflowimg = bgr_erode(opflowimg, iterations=8, kernal_size=6)
+        # opflowimg = bgr_dilate(opflowimg, iterations=4, kernal_size=10)
+
+        opflowimg = bgr_erode(opflowimg, iterations=8, kernal_size=6)
+        opflowimg = bgr_dilate(opflowimg, iterations=4, kernal_size=10)
 
         process_flow_contours(opflowimg)
 
@@ -275,61 +286,77 @@ def compute_flow_and_mask_video(input_video_path, model, output_video_path):
         g_mean = np.mean(g)*20
         r_mean = np.mean(r)*20
 
+        # print("b = %2.f" % b_mean, " g = %2.f" % g_mean, " r = %2.f " % r_mean)
+
+        cv2.putText(opflowimg, "r %2.f, " % r_mean + "g %2.f, " % g_mean + "b %2.f" %
+                    b_mean, (280, 28), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
+
         sliding_window(bgr_values[0], b_mean)
         sliding_window(bgr_values[1], g_mean)
         sliding_window(bgr_values[2], r_mean)
 
-        bgr_numpy = []
-        for i in range(len(bgr_values)):
-            bgr_values[i] = remove_continous_duplicates(bgr_values[i])
-            bgr_numpy.append(np.array(bgr_values[i], np.float32))
+        assert len(bgr_values[0]) == len(bgr_values[1]) and len(
+            bgr_values[1]) == len(bgr_values[2])
+
+        ax.plot(bgr_values[0], color='blue')
+        ax.plot(bgr_values[1], color='green')
+        ax.plot(bgr_values[2], color='red')
+        ax.set_ylim(0, 200)
+        fig.canvas.draw()
+        img = np.fromstring(fig.canvas.tostring_rgb(), dtype=np.uint8, sep='')
+        img = img.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
         extrema_idxs = []
-        min_length = bgr_numpy[0].size
+        min_length = bgr_values[0].size
 
         for i in range(len(bgr_values)):
-            extrema_idxs.append(
-                np.array(get_extremas(bgr_values[i])).flatten())
+            extrema_idxs.append(get_extremas(bgr_values[i]))
             min_length = min(min_length, extrema_idxs[-1].size)
 
         if min_length > 0:
-            g_max_index = -1
-            g_max_val = -1
-            max_g_idx = np.argmax(bgr_numpy[1])
-
-            for extrema_idx in extrema_idxs[1]:
-                val = bgr_numpy[1][extrema_idx]
-                if val > g_max_val:
-                    g_max_val = val
-                    g_max_index = extrema_idx
+            g_max_index_wrt_extrema = np.argmax(bgr_values[1][extrema_idxs[1]])
+            g_max_index = extrema_idxs[1][g_max_index_wrt_extrema]
+            g_max_val = bgr_values[1][g_max_index]
 
             b_peak_idxs_after_g = filter_peaks(g_max_index, extrema_idxs[0])
-            r_peak_idxs_after_g = filter_peaks(g_max_index, extrema_idxs[2])
+            # r_peak_idxs_after_g = filter_peaks(g_max_index, extrema_idxs[2])
 
-            if b_peak_idxs_after_g.size > 0 and r_peak_idxs_after_g.size > 0:
+            # intersection = np.intersect1d(b_peak_idxs_after_g, r_peak_idxs_after_g)
 
-                b_peak_after_g = 1.0*np.max(bgr_numpy[0][b_peak_idxs_after_g])
-                r_peak_after_g = 1.0*np.max(bgr_numpy[2][r_peak_idxs_after_g])
+            # print("g_numpy", bgr_values[1])
+            # print("g_max_index", g_max_index)
+            # print("g_max_val", g_max_val)
+            # print("b_numpy", bgr_values[0])
+            # print("extrema_idxs b", extrema_idxs[0])
+            # print("r_numpy", bgr_values[1])
+            # print("extrema_idxs_r", extrema_idxs[2])
+            # print("b_peak_idxsafter_g", b_peak_idxs_after_g)
+            # print("r_peak_idxsafter_g", r_peak_idxs_after_g)
+            # print("g_max_val", g_max_val)
 
-                if g_max_val >= 40 and b_peak_after_g >= 10 and r_peak_after_g >= 10 and g_max_val > b_peak_after_g and g_max_val > r_peak_after_g and abs(r_peak_after_g - b_peak_after_g) <= 20:
+            if b_peak_idxs_after_g.size > 0:
+
+                max_b_peak_idx = b_peak_idxs_after_g[np.argmax(
+                    bgr_values[0][b_peak_idxs_after_g])]
+                b_peak_after_g = bgr_values[0][max_b_peak_idx]
+                r_peak_after_g = bgr_values[2][max_b_peak_idx]
+                g_value_after_g = bgr_values[1][max_b_peak_idx]
+
+                # print("b_peak", b_peak_after_g)
+                # print("r_peak", r_peak_after_g)
+                # print("g_value_after_g", g_value_after_g)
+
+                if g_max_val >= 40 and min(b_peak_after_g, r_peak_after_g) > 6 and g_max_val > max(b_peak_after_g, r_peak_after_g) and abs(r_peak_after_g - b_peak_after_g) <= 25 and g_value_after_g < 5:
+                    print("BOUNCE DETECTED!")
                     print("g = ", g_max_val)
                     print("b = ", b_peak_after_g)
                     print("r = ", r_peak_after_g)
                     cv2.putText(frame, "BOUNCE DETECTED!",
                                 (280, 28), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
 
-        ax.plot(bgr_values[0], color='blue')
-        ax.plot(bgr_values[1], color='green')
-        ax.plot(bgr_values[2], color='red')
-
-        ax.set_ylim(0, 200)
-
-        fig.canvas.draw()
-
-        img = np.fromstring(fig.canvas.tostring_rgb(), dtype=np.uint8, sep='')
-        img = img.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-        # img is rgb, convert to opencv's default bgr
-        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        frame = cv2.resize(frame, (640, 640))
+        opflowimg = cv2.resize(opflowimg, (640, 640))
         img = cv2.resize(img, (640, 640))
 
         output_frame = cv2.hconcat([frame, opflowimg, img])
@@ -356,7 +383,7 @@ def compute_flow_and_mask_video(input_video_path, model, output_video_path):
 
 def get_arguments():
     parser = argparse.ArgumentParser(
-        description='Takes an input video and counts the time in seconds people are stepping on the load.')
+        description='Takes an input video and detects bounce violations.')
 
     parser.add_argument('--input_video', type=str, default='', const="",
                         nargs='?', help='Input video path.')
