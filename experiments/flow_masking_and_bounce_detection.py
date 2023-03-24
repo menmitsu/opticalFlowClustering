@@ -234,6 +234,7 @@ def compute_flow_and_mask_video(input_video_path, model, output_video_path):
             output_video_path, cv2.VideoWriter_fourcc('a', 'v', 'c', '1'), framerate, (1920, 640))  # NOTE: This VideoWriter may not work in linux environments
 
     ret, firstframe = cap.read()
+    firstframe = cv2.resize(firstframe, (1280, 720))
     bbox = ((0, 77), (650, 729))
     mask = np.zeros(firstframe.shape[:2], dtype=np.uint8)
     cv2.rectangle(mask, bbox[0], bbox[1], (255, 255, 255), -1)
@@ -254,7 +255,7 @@ def compute_flow_and_mask_video(input_video_path, model, output_video_path):
         if not success:
             break
 
-        # frame = cv2.resize(frame, (640, 640))
+        frame = cv2.resize(frame, (1280, 720))
         frame = cv2.bitwise_and(frame, frame, mask=mask)
         # frame = frame[bbox[0][1]:bbox[1][1],bbox[0][0]:bbox[1][0]]
 
@@ -316,42 +317,41 @@ def compute_flow_and_mask_video(input_video_path, model, output_video_path):
 
         if min_length > 0:
             g_max_index_wrt_extrema = np.argmax(bgr_values[1][extrema_idxs[1]])
-            g_max_index = extrema_idxs[1][g_max_index_wrt_extrema]
+            g_max_index = extrema_idxs[1][g_max_index_wrt_extrema]            
+            
+            b_value_at_g = bgr_values[0][g_max_index]
             g_max_val = bgr_values[1][g_max_index]
+            r_value_at_g = bgr_values[2][g_max_index]
 
-            b_peak_idxs_after_g = filter_peaks(g_max_index, extrema_idxs[0])
             # r_peak_idxs_after_g = filter_peaks(g_max_index, extrema_idxs[2])
-
             # intersection = np.intersect1d(b_peak_idxs_after_g, r_peak_idxs_after_g)
 
-            # print("g_numpy", bgr_values[1])
-            # print("g_max_index", g_max_index)
-            # print("g_max_val", g_max_val)
-            # print("b_numpy", bgr_values[0])
-            # print("extrema_idxs b", extrema_idxs[0])
-            # print("r_numpy", bgr_values[1])
-            # print("extrema_idxs_r", extrema_idxs[2])
-            # print("b_peak_idxsafter_g", b_peak_idxs_after_g)
-            # print("r_peak_idxsafter_g", r_peak_idxs_after_g)
-            # print("g_max_val", g_max_val)
+            b_peak_idxs_after_g = filter_peaks(g_max_index, extrema_idxs[0])
 
-            if b_peak_idxs_after_g.size > 0:
-
+            if b_peak_idxs_after_g.size > 0 and g_max_val - b_value_at_g > 20 and g_max_val > 30:
+                                
                 max_b_peak_idx = b_peak_idxs_after_g[np.argmax(
                     bgr_values[0][b_peak_idxs_after_g])]
                 b_peak_after_g = bgr_values[0][max_b_peak_idx]
-                r_peak_after_g = bgr_values[2][max_b_peak_idx]
                 g_value_after_g = bgr_values[1][max_b_peak_idx]
-
+                r_peak_after_g = bgr_values[2][max_b_peak_idx]
+                
                 # print("b_peak", b_peak_after_g)
                 # print("r_peak", r_peak_after_g)
+                # print("b_value_at_g", b_value_at_g)
                 # print("g_value_after_g", g_value_after_g)
 
-                if g_max_val >= 40 and min(b_peak_after_g, r_peak_after_g) > 6 and g_max_val > max(b_peak_after_g, r_peak_after_g) and abs(r_peak_after_g - b_peak_after_g) <= 25 and g_value_after_g < 5:
+                if (min(b_peak_after_g, r_peak_after_g) > 6 
+                    and g_max_val > max(b_peak_after_g, r_peak_after_g) 
+                    and abs(r_peak_after_g - b_peak_after_g) <= 25 
+                    and min(b_peak_after_g, r_peak_after_g) - g_value_after_g > 5):
                     print("BOUNCE DETECTED!")
-                    print("g = ", g_max_val)
-                    print("b = ", b_peak_after_g)
-                    print("r = ", r_peak_after_g)
+                    print("b at g", b_value_at_g)
+                    print("g max", g_max_val)
+                    print("r at g", r_value_at_g)
+                    print("b after g", b_peak_after_g)
+                    print("g after g", g_value_after_g)
+                    print("r after g", r_peak_after_g)
                     cv2.putText(frame, "BOUNCE DETECTED!",
                                 (280, 28), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
 
