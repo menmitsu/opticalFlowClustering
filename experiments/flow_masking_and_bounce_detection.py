@@ -1,3 +1,7 @@
+from typing import List
+import faiss
+from sklearn.cluster import KMeans
+import matplotlib.pyplot as plt
 from ultralytics import YOLO
 import numpy as np
 import cv2
@@ -5,11 +9,25 @@ import torch
 import argparse
 import os
 import pandas as pd
-import matplotlib.pyplot as plt
-from sklearn.cluster import KMeans
-import faiss
-from typing import List
+import matplotlib
+matplotlib.use("Agg")
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
+
+def str2bool(v: str):
+    """Convert a string representation of truth to true (1) or false (0).
+    True values are 'y', 'yes', 't', 'true', 'on', and '1'; false values
+    are 'n', 'no', 'f', 'false', 'off', and '0'.  Raises error if v is
+    anything else.
+    """
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1', 'on'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0', 'off'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
 
 
 class FaissKMeans:
@@ -91,15 +109,12 @@ def adjust_gamma(image, gamma=1.0):
     return cv2.LUT(image, table)
 
 
-def scale_contour(cnt):
+def scale_contour(cnt, CONTOUR_SCALE_X=1, CONTOUR_SCALE_Y=1):
     """Scales a counter in both X and Y direction by a factor of CONTOUR_SCALE_X and CONTOUR_SCALE_Y respectively"""
     M = cv2.moments(cnt.astype(np.float32))
 
     cx = M['m10']/M['m00']
     cy = M['m01']/M['m00']
-
-    CONTOUR_SCALE_X = 1
-    CONTOUR_SCALE_Y = 1
 
     cnt_norm = cnt - [cx, cy]
     cnt_scaled = np.array([[x*CONTOUR_SCALE_X, y*CONTOUR_SCALE_Y]
@@ -173,23 +188,6 @@ def bgr_dilate(img, iterations, kernal_size=5):
     return eroded_img
 
 
-def process_flow_contours(frame, gamma=2, threshold_val=10):
-    # Sets the color of all the points inside the detected contours to their mean value and increases gamma
-    frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    _, threshold = cv2.threshold(
-        frame_gray, threshold_val, 255, cv2.THRESH_BINARY)
-    contours, _ = cv2.findContours(
-        threshold, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    for contour in contours:
-        mask = np.zeros(threshold.shape, np.uint8)
-        cv2.drawContours(mask, [contour], -1, 255, -1)
-        mean_val = cv2.mean(frame, mask=mask)
-        mean_val = np.uint8(mean_val[0:3])
-        mean_val = adjust_gamma(mean_val, gamma).flatten()
-        frame[mask == 255] = mean_val
-
-
 def sliding_window(values, newvalue):
     values[:-1] = values[1:]
     values[-1] = newvalue
@@ -221,77 +219,128 @@ def filter_peaks(max_idx, extremas_idx, peak_distance=10):
     return extremas_idx[selection]
 
 
-def compute_flow_and_mask_video(input_video_path, model, output_video_path):
+def detect_bounce_pattern(bgr_values):
+    extrema_idxs = []
+    min_length = bgr_values[0].size
+
+    for i in range(len(bgr_values)):
+        extrema_idxs.append(get_extremas(bgr_values[i]))
+        min_length = min(min_length, extrema_idxs[-1].size)
+
+    if min_length > 0:
+        g_max_index_wrt_extrema = np.argmax(bgr_values[1][extrema_idxs[1]])
+        g_max_index = extrema_idxs[1][g_max_index_wrt_extrema]
+
+        b_value_at_g = bgr_values[0][g_max_index]
+        g_max_val = bgr_values[1][g_max_index]
+        r_value_at_g = bgr_values[2][g_max_index]
+
+        b_peak_idxs_after_g = filter_peaks(g_max_index, extrema_idxs[0])
+
+        if b_peak_idxs_after_g.size > 0 and g_max_val - b_value_at_g > 20 and g_max_val > 30 and r_value_at_g > 25:
+
+            max_b_peak_idx = b_peak_idxs_after_g[np.argmax(
+                bgr_values[0][b_peak_idxs_after_g])]
+            b_peak_after_g = bgr_values[0][max_b_peak_idx]
+            g_value_after_g = bgr_values[1][max_b_peak_idx]
+            r_peak_after_g = bgr_values[2][max_b_peak_idx]
+
+            if (min(b_peak_after_g, r_peak_after_g) > 6
+                and g_max_val > max(b_peak_after_g, r_peak_after_g)
+                and abs(r_peak_after_g - b_peak_after_g) <= 25
+                    and min(b_peak_after_g, r_peak_after_g) - g_value_after_g > 5):
+                print("BOUNCE DETECTED!")
+                print("b at g", b_value_at_g)
+                print("g max", g_max_val)
+                print("r at g", r_value_at_g)
+                print("b after g", b_peak_after_g)
+                print("g after g", g_value_after_g)
+                print("r after g", r_peak_after_g)
+                return True
+
+    return False
+
+
+def process_flow(frame, gamma=2, threshold_val=10):
+    # Remove noise by thresholding and then perform erosion and dilation.
+    frame[frame <= 35] = 0
+    frame = bgr_erode(frame, iterations=8, kernal_size=6)
+    frame = bgr_dilate(frame, iterations=4, kernal_size=10)
+
+    # Sets the color of all the points inside the detected contours to their mean value and increases gamma
+    frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    _, threshold = cv2.threshold(
+        frame_gray, threshold_val, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(
+        threshold, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    for contour in contours:
+        mask = np.zeros(threshold.shape, np.uint8)
+        cv2.drawContours(mask, [contour], -1, 255, -1)
+        mean_val = cv2.mean(frame, mask=mask)
+        mean_val = np.uint8(mean_val[0:3])
+        mean_val = adjust_gamma(mean_val, gamma).flatten()
+        frame[mask == 255] = mean_val
+
+    return frame
+
+
+def compute_flow_and_mask_video(input_video_path, model, output_video_path, show_img=False):
+    filename = os.path.splitext(os.path.basename(input_video_path))[0]
     cap = cv2.VideoCapture(input_video_path)
-    success = True
-    frames_counted = 0
-    framerate = int(cap.get(cv2.CAP_PROP_FPS))
+    framecount = 1
     output_video = None
+    bounce_detected = False
+    scale_value = 20
 
     if output_video_path is not None:
         print('Output at: ', output_video_path)
+        framerate = int(cap.get(cv2.CAP_PROP_FPS))
+        # cv2.VideoWriter_fourcc('a', 'v', 'c', '1')
         output_video = cv2.VideoWriter(
-            output_video_path, cv2.VideoWriter_fourcc('a', 'v', 'c', '1'), framerate, (1920, 640))  # NOTE: This VideoWriter may not work in linux environments
+            output_video_path, cv2.VideoWriter_fourcc(*'DIVX'), framerate, (1920, 640))  # NOTE: This VideoWriter may not work in linux environments
 
-    ret, firstframe = cap.read()
-    firstframe = cv2.resize(firstframe, (1280, 720))
-    bbox = ((0, 77), (650, 729))
-    mask = np.zeros(firstframe.shape[:2], dtype=np.uint8)
+    resolution = (1280, 720)
+    bbox = ((0, 90), (640, 729))
+    mask = np.zeros((resolution[1], resolution[0]), dtype=np.uint8)
     cv2.rectangle(mask, bbox[0], bbox[1], (255, 255, 255), -1)
+
+    success, firstframe = cap.read()
+    firstframe = cv2.resize(firstframe, resolution)
     firstframe = cv2.bitwise_and(firstframe, firstframe, mask=mask)
 
-    masks = get_masks(firstframe, model)[0]
     compflow = ComputeOpticalFLow(firstframe)
 
     window_size = 15
     bgr_values = [np.zeros(window_size, dtype=np.float32), np.zeros(
         window_size, dtype=np.float32), np.zeros(window_size, dtype=np.float32)]
 
-    fig = plt.figure()
-    ax = fig.add_subplot(1, 1, 1)
+    if show_img or output_video:
+        fig = plt.figure()
+        ax = fig.add_subplot(1, 1, 1)
 
     while success:
         success, frame = cap.read()
         if not success:
             break
 
-        frame = cv2.resize(frame, (1280, 720))
-        frame = cv2.bitwise_and(frame, frame, mask=mask)
-        # frame = frame[bbox[0][1]:bbox[1][1],bbox[0][0]:bbox[1][0]]
-
         key = cv2.waitKey(1) & 0xff
-        ax.clear()
+
+        frame = cv2.resize(frame, resolution)
+        frame = cv2.bitwise_and(frame, frame, mask=mask)
+
         opflowimg = compflow.compute(frame)
 
         masks = get_masks([frame], model)[0]
-
         for ctr in masks:
             cv2.drawContours(opflowimg, [ctr], -1, (0, 0, 0), cv2.FILLED)
 
-        opflowimg[opflowimg <= 35] = 0
-
-        # opflowimg = bgr_erode(opflowimg, iterations=9, kernal_size=5)
-        # opflowimg = bgr_dilate(opflowimg, iterations=4, kernal_size=9)
-
-        # opflowimg = bgr_erode(opflowimg, iterations=8, kernal_size=6)
-        # opflowimg = bgr_dilate(opflowimg, iterations=4, kernal_size=10)
-
-        opflowimg = bgr_erode(opflowimg, iterations=8, kernal_size=6)
-        opflowimg = bgr_dilate(opflowimg, iterations=4, kernal_size=10)
-
-        process_flow_contours(opflowimg)
+        opflowimg = process_flow(opflowimg)
 
         b, g, r = cv2.split(opflowimg)
-
-        b_mean = np.mean(b)*20
-        g_mean = np.mean(g)*20
-        r_mean = np.mean(r)*20
-
-        # print("b = %2.f" % b_mean, " g = %2.f" % g_mean, " r = %2.f " % r_mean)
-
-        cv2.putText(opflowimg, "r %2.f, " % r_mean + "g %2.f, " % g_mean + "b %2.f" %
-                    b_mean, (280, 28), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
-
+        b_mean = np.mean(b)*scale_value
+        g_mean = np.mean(g)*scale_value
+        r_mean = np.mean(r)*scale_value
         sliding_window(bgr_values[0], b_mean)
         sliding_window(bgr_values[1], g_mean)
         sliding_window(bgr_values[2], r_mean)
@@ -299,86 +348,55 @@ def compute_flow_and_mask_video(input_video_path, model, output_video_path):
         assert len(bgr_values[0]) == len(bgr_values[1]) and len(
             bgr_values[1]) == len(bgr_values[2])
 
-        ax.plot(bgr_values[0], color='blue')
-        ax.plot(bgr_values[1], color='green')
-        ax.plot(bgr_values[2], color='red')
-        ax.set_ylim(0, 200)
-        fig.canvas.draw()
-        img = np.fromstring(fig.canvas.tostring_rgb(), dtype=np.uint8, sep='')
-        img = img.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        bounce_detected_in_window = detect_bounce_pattern(bgr_values)
+        bounce_detected = bounce_detected | bounce_detected_in_window
 
-        extrema_idxs = []
-        min_length = bgr_values[0].size
+        if show_img or output_video:
+            if bounce_detected_in_window:
+                cv2.putText(frame, "BOUNCE DETECTED!", (280, 28),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
 
-        for i in range(len(bgr_values)):
-            extrema_idxs.append(get_extremas(bgr_values[i]))
-            min_length = min(min_length, extrema_idxs[-1].size)
+            cv2.putText(opflowimg, "r %2.f, " % r_mean + "g %2.f, " % g_mean + "b %2.f" %
+                        b_mean, (280, 28), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
+            ax.clear()
+            ax.plot(bgr_values[0], color='blue')
+            ax.plot(bgr_values[1], color='green')
+            ax.plot(bgr_values[2], color='red')
+            ax.set_ylim(0, 200)
+            fig.canvas.draw()
+            img = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+            img = img.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
-        if min_length > 0:
-            g_max_index_wrt_extrema = np.argmax(bgr_values[1][extrema_idxs[1]])
-            g_max_index = extrema_idxs[1][g_max_index_wrt_extrema]            
-            
-            b_value_at_g = bgr_values[0][g_max_index]
-            g_max_val = bgr_values[1][g_max_index]
-            r_value_at_g = bgr_values[2][g_max_index]
+            frame = cv2.resize(frame, (640, 640))
+            opflowimg = cv2.resize(opflowimg, (640, 640))
+            img = cv2.resize(img, (640, 640))
+            output_frame = cv2.hconcat([frame, opflowimg, img])
 
-            # r_peak_idxs_after_g = filter_peaks(g_max_index, extrema_idxs[2])
-            # intersection = np.intersect1d(b_peak_idxs_after_g, r_peak_idxs_after_g)
+            if show_img:
+                if key == ord('p'):  # Use 'p' to pause and resume the video playback
+                    while True:
+                        key2 = cv2.waitKey(1) or 0xff
+                        cv2.imshow('Win', output_frame)
+                        if key2 == ord('p') or key2 == 27:
+                            break
 
-            b_peak_idxs_after_g = filter_peaks(g_max_index, extrema_idxs[0])
-
-            if b_peak_idxs_after_g.size > 0 and g_max_val - b_value_at_g > 20 and g_max_val > 30:
-                                
-                max_b_peak_idx = b_peak_idxs_after_g[np.argmax(
-                    bgr_values[0][b_peak_idxs_after_g])]
-                b_peak_after_g = bgr_values[0][max_b_peak_idx]
-                g_value_after_g = bgr_values[1][max_b_peak_idx]
-                r_peak_after_g = bgr_values[2][max_b_peak_idx]
-                
-                # print("b_peak", b_peak_after_g)
-                # print("r_peak", r_peak_after_g)
-                # print("b_value_at_g", b_value_at_g)
-                # print("g_value_after_g", g_value_after_g)
-
-                if (min(b_peak_after_g, r_peak_after_g) > 6 
-                    and g_max_val > max(b_peak_after_g, r_peak_after_g) 
-                    and abs(r_peak_after_g - b_peak_after_g) <= 25 
-                    and min(b_peak_after_g, r_peak_after_g) - g_value_after_g > 5):
-                    print("BOUNCE DETECTED!")
-                    print("b at g", b_value_at_g)
-                    print("g max", g_max_val)
-                    print("r at g", r_value_at_g)
-                    print("b after g", b_peak_after_g)
-                    print("g after g", g_value_after_g)
-                    print("r after g", r_peak_after_g)
-                    cv2.putText(frame, "BOUNCE DETECTED!",
-                                (280, 28), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
-
-        frame = cv2.resize(frame, (640, 640))
-        opflowimg = cv2.resize(opflowimg, (640, 640))
-        img = cv2.resize(img, (640, 640))
-
-        output_frame = cv2.hconcat([frame, opflowimg, img])
-        if key == ord('p'):
-            while True:
-                key2 = cv2.waitKey(1) or 0xff
                 cv2.imshow('Win', output_frame)
-                if key2 == ord('p') or key2 == 27:
-                    break
 
-        cv2.imshow('Win', output_frame)
+            if output_video is not None:
+                output_video.write(output_frame)
 
-        if output_video is not None:
-            output_video.write(output_frame)
+            if key == 27:
+                break
 
-        if key == 27:
-            break
+        framecount = framecount + 1
 
     cap.release()
     if output_video is not None:
         print("Output video released.")
         output_video.release()
+
+    return bounce_detected
 
 
 def get_arguments():
@@ -391,6 +409,10 @@ def get_arguments():
     parser.add_argument('--output', type=str, default=None, const="",
                         nargs='?', help='Output video path')
 
+    parser.add_argument("--show_img", type=str2bool, nargs='?',
+                        const=True, default=False,
+                        help="Whether to show processed frames.")
+
     return parser.parse_args()
 
 
@@ -398,8 +420,9 @@ def main(args):
     print(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
     model = YOLO('yolov8x-seg.pt')
     model.fuse()
-    compute_flow_and_mask_video(input_video_path=args.input_video,
-                                model=model, output_video_path=args.output)
+    print(compute_flow_and_mask_video(input_video_path=args.input_video,
+                                      model=model, output_video_path=args.output,
+                                      show_img=args.show_img))
 
 
 if __name__ == '__main__':
