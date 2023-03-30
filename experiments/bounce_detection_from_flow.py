@@ -47,7 +47,7 @@ def detect_bounce_from_flow(input_video_path, output_video_path, show_img=False)
         framerate = int(cap.get(cv2.CAP_PROP_FPS))
         # cv2.VideoWriter_fourcc('a', 'v', 'c', '1') # NOTE: This VideoWriter may not work in linux environments
         output_video = cv2.VideoWriter(
-            output_video_path, cv2.VideoWriter_fourcc(*'DIVX'), framerate, (1280, 640))  
+            output_video_path, cv2.VideoWriter_fourcc(*'DIVX'), framerate, (1280, 640))
 
     window_size = 15
     bgr_values = [np.zeros(window_size, dtype=np.float32), np.zeros(

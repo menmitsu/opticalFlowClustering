@@ -47,7 +47,7 @@ class ComputeOpticalFLow:
         self.prev_gray = gray
 
         return rgb
-        
+
 
 def compute_flow_and_mask_video(input_video_path, model, output_video_path, show_img=False):
     filename = os.path.splitext(os.path.basename(input_video_path))[0]

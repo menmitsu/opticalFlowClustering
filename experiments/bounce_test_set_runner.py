@@ -5,7 +5,6 @@ from typing import List
 import faiss
 from sklearn.cluster import KMeans
 import matplotlib.pyplot as plt
-from ultralytics import YOLO
 import numpy as np
 import cv2
 import torch

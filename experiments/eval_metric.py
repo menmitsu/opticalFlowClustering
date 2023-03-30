@@ -66,7 +66,8 @@ def main(args):
     macro_avg = eval_dict['overall_report']['macro avg']
     weighted_avg = eval_dict['overall_report']['weighted avg']
 
-    results_dict = {'combination': 'Third_iteration' ,'overall_accuracy': [], '0_accuracy': [], '1_accuracy': [], 'macro_precision': [], 'macro_recall': [], 'macro_f1-score': []}
+    results_dict = {'combination': 'Third_iteration', 'overall_accuracy': [], '0_accuracy': [
+    ], '1_accuracy': [], 'macro_precision': [], 'macro_recall': [], 'macro_f1-score': []}
 
     results_dict['overall_accuracy'].append(overall_accuracy)
     results_dict['0_accuracy'].append(eval_dict['0']['accuracy'])
@@ -77,6 +78,7 @@ def main(args):
 
     results_df = pd.DataFrame(results_dict)
     results_df.to_csv('eval_metric.csv', index=False)
+
 
 if __name__ == '__main__':
     args = get_arguments()
