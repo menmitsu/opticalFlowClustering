@@ -142,7 +142,7 @@ def get_masks(frames: List[np.array], model, classes=[0, 58], scale_contours=Fal
         cnts = []
         if boxes is not None and masks is not None and len(boxes) == len(masks):
             for box, segment in zip(boxes, masks):
-                if box.cls in classes:
+                if box.cls in classes and segment.size > 0:
                     segment[:, 0] *= shape_x
                     segment[:, 1] *= shape_y
                     if scale_contours:
