@@ -11,6 +11,9 @@ import os
 import pandas as pd
 import matplotlib
 from flow_masking_and_bounce_detection import get_masks
+from flow_masking_and_bounce_detection import create_mask
+from flow_masking_and_bounce_detection import process_frame
+
 matplotlib.use("Agg")
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
@@ -49,27 +52,22 @@ class ComputeOpticalFLow:
         return rgb
 
 
-def compute_flow_and_mask_video(input_video_path, model, output_video_path, show_img=False):
+def compute_flow_and_mask_video(input_video_path, model, output_video_path, show_img=False, process_flow=False):
     filename = os.path.splitext(os.path.basename(input_video_path))[0]
     cap = cv2.VideoCapture(input_video_path)
     framecount = 1
     output_video = None
     resolution = (1280, 720)
-    bbox = ((0, 90), (640, 729))
-    mask = np.zeros((resolution[1], resolution[0]), dtype=np.uint8)
-    cv2.rectangle(mask, bbox[0], bbox[1], (255, 255, 255), -1)
+    mask = create_mask(resolution=resolution)
 
     if output_video_path is not None:
         print('Output at: ', output_video_path)
         framerate = int(cap.get(cv2.CAP_PROP_FPS))
-        # cv2.VideoWriter_fourcc('a', 'v', 'c', '1')
         output_video = cv2.VideoWriter(
             output_video_path, cv2.VideoWriter_fourcc(*'DIVX'), framerate, resolution)
 
     success, firstframe = cap.read()
-    firstframe = cv2.resize(firstframe, resolution)
-    firstframe = cv2.bitwise_and(firstframe, firstframe, mask=mask)
-
+    firstframe = process_frame(firstframe, resolution, mask)
     compflow = ComputeOpticalFLow(firstframe)
 
     while success:
@@ -78,15 +76,13 @@ def compute_flow_and_mask_video(input_video_path, model, output_video_path, show
             break
 
         key = cv2.waitKey(1) & 0xff
-
-        frame = cv2.resize(frame, resolution)
-        frame = cv2.bitwise_and(frame, frame, mask=mask)
+        frame = process_frame(frame, resolution, mask)
 
         opflowimg = compflow.compute(frame)
-
         masks = get_masks([frame], model)[0]
-        for ctr in masks:
-            cv2.drawContours(opflowimg, [ctr], -1, (0, 0, 0), cv2.FILLED)
+        cv2.drawContours(opflowimg, masks, -1, (0, 0, 0), cv2.FILLED)
+        if process_flow:
+            opflowimg = process_flow(opflowimg)
 
         if show_img:
             cv2.imshow('Win', opflowimg)

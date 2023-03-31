@@ -1,20 +1,16 @@
 from typing import List
-import faiss
-from sklearn.cluster import KMeans
 import matplotlib.pyplot as plt
 import numpy as np
 import cv2
-import torch
 import argparse
 import os
 import pandas as pd
-import matplotlib
 from flow_masking_and_bounce_detection import process_flow
 from flow_masking_and_bounce_detection import detect_bounce_pattern
 from flow_masking_and_bounce_detection import sliding_window
-
-matplotlib.use("Agg")
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+from flow_masking_and_bounce_detection import plot_graphs_and_create_img
+from flow_masking_and_bounce_detection import hconcat_frames
+from flow_masking_and_bounce_detection import play_pause
 
 
 def str2bool(v: str):
@@ -33,25 +29,53 @@ def str2bool(v: str):
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
 
-def detect_bounce_from_flow(input_video_path, output_video_path, show_img=False):
+def combine_images(imgs):
+    combined_image = np.zeros(imgs[0].shape, dtype=np.uint8)
+    for img in imgs:
+        combined_image = np.maximum(combined_image, img)
+    return combined_image
+
+
+def process_combined_img(frame, threshold_val=5):
+    # Remove noise by thresholding and then perform erosion and dilation.
+    # frame[frame <= 15] = 0
+
+    # Sets the color of all the points inside the detected contours to their mean value and increases gamma
+    frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    _, threshold = cv2.threshold(
+        frame_gray, threshold_val, 255, cv2.THRESH_BINARY)
+    contours, _ = cv2.findContours(
+        threshold, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    for contour in contours:
+        cv2.drawContours(frame, [contour], -1, (0,255,0), 2)
+        x, y, w, h = cv2.boundingRect(contour)
+        # Draw the bounding rectangle
+        cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 0, 255), 2)
+
+    return frame
+
+def detect_bounce_from_flow(input_video_path, output_video_path, show_img=False, scale_value=20, process_optical_flow=True):
     filename = os.path.splitext(os.path.basename(input_video_path))[0]
     cap = cv2.VideoCapture(input_video_path)
     framecount = 0
     output_video = None
     bounce_detected = False
     success = True
-    scale_value = 20
+    # scale_value = 20
 
     if output_video_path is not None:
         print('Output at: ', output_video_path)
         framerate = int(cap.get(cv2.CAP_PROP_FPS))
-        # cv2.VideoWriter_fourcc('a', 'v', 'c', '1') # NOTE: This VideoWriter may not work in linux environments
         output_video = cv2.VideoWriter(
-            output_video_path, cv2.VideoWriter_fourcc(*'DIVX'), framerate, (1280, 640))
+            output_video_path, cv2.VideoWriter_fourcc('a', 'v', 'c', '1'), framerate, (1280, 640))  # NOTE: This VideoWriter may not work in linux environments
 
     window_size = 15
-    bgr_values = [np.zeros(window_size, dtype=np.float32), np.zeros(
-        window_size, dtype=np.float32), np.zeros(window_size, dtype=np.float32)]
+    bgr_values = [np.zeros(window_size, dtype=np.float32) for _ in range(3)]
+
+    sliding_img_window = np.zeros((window_size, 640, 640, 3), dtype=np.uint8)
+
+    print(sliding_img_window.shape)
 
     if show_img or output_video:
         fig = plt.figure()
@@ -63,59 +87,40 @@ def detect_bounce_from_flow(input_video_path, output_video_path, show_img=False)
             break
 
         key = cv2.waitKey(1) & 0xff
+        if process_optical_flow:
+            opflowimg = process_flow(opflowimg)
 
-        opflowimg = process_flow(opflowimg)
+        sliding_window(sliding_img_window, cv2.resize(opflowimg, (640, 640)))
+        combined_img = combine_images(sliding_img_window)
+        # process_flow(combined_img)
+        process_combined_img(combined_img)
+        cv2.imwrite('test_combined/combined_img_' +
+                    str(framecount) + ".png", combined_img)
 
-        b, g, r = cv2.split(opflowimg)
-        b_mean = np.mean(b)*scale_value
-        g_mean = np.mean(g)*scale_value
-        r_mean = np.mean(r)*scale_value
-        sliding_window(bgr_values[0], b_mean)
-        sliding_window(bgr_values[1], g_mean)
-        sliding_window(bgr_values[2], r_mean)
-
-        assert len(bgr_values[0]) == len(bgr_values[1]) and len(
-            bgr_values[1]) == len(bgr_values[2])
+        for i in range(3):
+            color_channel = opflowimg[:, :, i].mean()
+            color_channel = color_channel*scale_value
+            sliding_window(bgr_values[i], color_channel)
 
         bounce_detected_in_window = detect_bounce_pattern(bgr_values)
         bounce_detected = bounce_detected | bounce_detected_in_window
 
         if show_img or output_video:
-            if bounce_detected_in_window:
-                cv2.putText(opflowimg, "BOUNCE DETECTED!", (200, 28),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
+            # if bounce_detected_in_window:
+            #     cv2.putText(opflowimg, "BOUNCE DETECTED!", (200, 28),
+            #                 cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
 
-            cv2.putText(opflowimg, "r %2.f, " % r_mean + "g %2.f, " % g_mean + "b %2.f" %
-                        b_mean, (280, 28), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
-            ax.clear()
-            ax.plot(bgr_values[0], color='blue')
-            ax.plot(bgr_values[1], color='green')
-            ax.plot(bgr_values[2], color='red')
-            ax.set_ylim(0, 200)
-            fig.canvas.draw()
-            img = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-            img = img.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            # cv2.putText(opflowimg, "r %2.f, " % bgr_values[2][-1] + "g %2.f, " % bgr_values[1][-1] + "b %2.f" %
+            #             bgr_values[0][-1], (280, 28), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
 
-            opflowimg = cv2.resize(opflowimg, (640, 640))
-            img = cv2.resize(img, (640, 640))
-            output_frame = cv2.hconcat([opflowimg, img])
+            img = plot_graphs_and_create_img(ax, fig, bgr_values)
+            output_frame = hconcat_frames([opflowimg, img])
 
-            if show_img:
-                if key == ord('p'):  # Use 'p' to pause and resume the video playback
-                    while True:
-                        key2 = cv2.waitKey(1) or 0xff
-                        cv2.imshow('Win', output_frame)
-                        if key2 == ord('p') or key2 == 27:
-                            break
-
-                cv2.imshow('Win', output_frame)
+            if show_img and play_pause(output_frame, key) == False:
+                break
 
             if output_video is not None:
                 output_video.write(output_frame)
-
-            if key == 27:
-                break
 
         framecount = framecount + 1
 
@@ -131,13 +136,23 @@ def get_arguments():
     parser = argparse.ArgumentParser(
         description='Takes an input flow video and detects bounce violations.')
 
-    parser.add_argument('--input_video', type=str, default='', const="",
-                        nargs='?', help='Input video path.')
+    parser.add_argument('--input_video', type=str, default=None, const="",
+                        nargs='?', help='Input optical flow video path.')
 
-    parser.add_argument('--output', type=str, default=None, const="",
+    parser.add_argument('--output_video', type=str, default=None, const="",
                         nargs='?', help='Output video path')
 
+    parser.add_argument('--input_dir', type=str, default=None, const="",
+                        nargs='?', help='Input folder containing mp4 optical flow videos.')
+
+    parser.add_argument('--output_dir', type=str, default=None, const="",
+                        nargs='?', help='Output folder path.')
+
     parser.add_argument("--show_img", type=str2bool, nargs='?',
+                        const=True, default=False,
+                        help="Whether to show processed frames.")
+
+    parser.add_argument("--process_optical_flow", type=str2bool, nargs='?',
                         const=True, default=False,
                         help="Whether to show processed frames.")
 
@@ -145,8 +160,49 @@ def get_arguments():
 
 
 def main(args):
-    print(detect_bounce_from_flow(input_video_path=args.input_video,
-                                  output_video_path=args.output, show_img=args.show_img))
+    if args.input_video is not None:
+        print(detect_bounce_from_flow(input_video_path=args.input_video,
+                                      output_video_path=args.output_video, show_img=args.show_img, process_optical_flow=args.process_optical_flow))
+
+    if args.output_dir is not None:
+        if not os.path.isdir(args.output_dir):
+            os.mkdir(args.output_dir)
+
+    preds = []
+    video_names = []
+
+    if args.input_dir is not None:
+        for subdir, dirs, files in os.walk(args.input_dir):
+            for file in files:
+                filepath = os.path.join(subdir, file)
+                filename = os.path.splitext(os.path.basename(filepath))[0]
+                if filename[-7:] == "optical" and filepath.endswith('.mp4'):
+                    dirname = os.path.dirname(filepath)
+                    output_filename = os.path.basename(
+                        dirname) + "_" + filename
+                    output_video_path = None
+
+                    print('Processing file: ', filepath)
+                    if args.output_dir is not None:
+                        output_video_path = os.path.join(
+                            args.output_dir, output_filename + "_out.mp4")
+                        print('Output at: ', output_video_path)
+
+                    pred = detect_bounce_from_flow(
+                        input_video_path=filepath, output_video_path=output_video_path, show_img=args.show_img, scale_value=1, process_optical_flow=args.process_optical_flow)
+
+                    video_names.append(output_filename)
+                    preds.append(1 if pred else 0)
+                    print('Done!')
+
+        print('Processed all files!')
+        print(preds)
+        if args.output_dir is not None:
+            output_results_csv_path = os.path.join(
+                args.output_dir, 'results.csv')
+            results_df = pd.DataFrame(
+                {"video_name": video_names, "preds": preds})
+            results_df.to_csv(output_results_csv_path, index=False)
 
 
 if __name__ == '__main__':

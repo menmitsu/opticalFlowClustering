@@ -126,7 +126,7 @@ def scale_contour(cnt, CONTOUR_SCALE_X=1, CONTOUR_SCALE_Y=1):
 
 
 # Corresponding classes: 0 -> person, 58 -> plant
-def get_masks(frames: List[np.array], model, classes=[0, 58]) -> List[np.array]:
+def get_masks(frames: List[np.array], model, classes=[0, 58], scale_contours=False) -> List[np.array]:
     # Returns a list of contours for objects of different classes found in each frame
 
     shape_y = frames[0].shape[0]
@@ -143,9 +143,11 @@ def get_masks(frames: List[np.array], model, classes=[0, 58]) -> List[np.array]:
         if boxes is not None and masks is not None and len(boxes) == len(masks):
             for box, segment in zip(boxes, masks):
                 if box.cls in classes:
-                    segment = np.array([[x*shape_x, y*shape_y]
-                                        for x, y in segment], np.float32)
-                    ctr = np.array(scale_contour(segment)).reshape(
+                    segment[:, 0] *= shape_x
+                    segment[:, 1] *= shape_y
+                    if scale_contour:
+                        segment = scale_contour(segment)
+                    ctr = np.array(segment).reshape(
                         (-1, 1, 2)).astype(np.int32)
                     cnts.append(ctr)
 
@@ -285,35 +287,76 @@ def process_flow(frame, gamma=2, threshold_val=10):
     return frame
 
 
+def plot_graphs_and_create_img(ax, fig, bgr_values):
+    ax.clear()
+    ax.plot(bgr_values[0], color='blue')
+    ax.plot(bgr_values[1], color='green')
+    ax.plot(bgr_values[2], color='red')
+    ax.set_ylim(0, 200)
+    fig.canvas.draw()
+    img = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+    img = img.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    return img
+
+
+def create_mask(resolution, bbox=((0, 90), (640, 729))):
+    mask = np.zeros((resolution[1], resolution[0]), dtype=np.uint8)
+    cv2.rectangle(mask, bbox[0], bbox[1], (255, 255, 255), -1)
+    return mask
+
+
+def play_pause(frame, key, window_name='Win'):
+    if key == ord('p'):  # Use 'p' to pause and resume the video playback
+        while True:
+            key2 = cv2.waitKey(1) or 0xff
+            cv2.imshow(window_name, frame)
+            if key2 == ord('p') or key2 == 27:
+                break
+
+    cv2.imshow(window_name, frame)
+    if key == 27:
+        return False
+
+
+def process_frame(frame, resolution, mask):
+    frame = cv2.resize(frame, resolution)
+    frame = cv2.bitwise_and(frame, frame, mask=mask)
+    return frame
+
+
+def hconcat_frames(frames, resolution=(640, 640)):
+    resized_frames = []
+    for frame in frames:
+        resized_frame = cv2.resize(frame, resolution)
+        resized_frames.append(resized_frame)
+
+    concatenated_frame = cv2.hconcat(resized_frames)
+    return concatenated_frame
+
+
 def compute_flow_and_mask_video(input_video_path, model, output_video_path, show_img=False):
     filename = os.path.splitext(os.path.basename(input_video_path))[0]
     cap = cv2.VideoCapture(input_video_path)
-    framecount = 1
     output_video = None
     bounce_detected = False
     scale_value = 20
+    resolution = (1280, 720)
 
     if output_video_path is not None:
         print('Output at: ', output_video_path)
         framerate = int(cap.get(cv2.CAP_PROP_FPS))
-        # cv2.VideoWriter_fourcc('a', 'v', 'c', '1')
+        # cv2.VideoWriter_fourcc(*'DIVX')
         output_video = cv2.VideoWriter(
-            output_video_path, cv2.VideoWriter_fourcc(*'DIVX'), framerate, (1920, 640))  # NOTE: This VideoWriter may not work in linux environments
+            output_video_path, cv2.VideoWriter_fourcc('a', 'v', 'c', '1'), framerate, (1920, 640))  # NOTE: This VideoWriter may not work in linux environments
 
-    resolution = (1280, 720)
-    bbox = ((0, 90), (640, 729))
-    mask = np.zeros((resolution[1], resolution[0]), dtype=np.uint8)
-    cv2.rectangle(mask, bbox[0], bbox[1], (255, 255, 255), -1)
-
+    mask = create_mask(resolution=resolution)
     success, firstframe = cap.read()
-    firstframe = cv2.resize(firstframe, resolution)
-    firstframe = cv2.bitwise_and(firstframe, firstframe, mask=mask)
-
+    firstframe = process_frame(firstframe, resolution, mask)
     compflow = ComputeOpticalFLow(firstframe)
 
     window_size = 15
-    bgr_values = [np.zeros(window_size, dtype=np.float32), np.zeros(
-        window_size, dtype=np.float32), np.zeros(window_size, dtype=np.float32)]
+    bgr_values = [np.zeros(window_size, dtype=np.float32) for _ in range(3)]
 
     if show_img or output_video:
         fig = plt.figure()
@@ -325,28 +368,17 @@ def compute_flow_and_mask_video(input_video_path, model, output_video_path, show
             break
 
         key = cv2.waitKey(1) & 0xff
-
-        frame = cv2.resize(frame, resolution)
-        frame = cv2.bitwise_and(frame, frame, mask=mask)
+        frame = process_frame(frame, resolution, mask)
 
         opflowimg = compflow.compute(frame)
-
         masks = get_masks([frame], model)[0]
-        for ctr in masks:
-            cv2.drawContours(opflowimg, [ctr], -1, (0, 0, 0), cv2.FILLED)
-
+        cv2.drawContours(opflowimg, masks, -1, (0, 0, 0), cv2.FILLED)
         opflowimg = process_flow(opflowimg)
 
-        b, g, r = cv2.split(opflowimg)
-        b_mean = np.mean(b)*scale_value
-        g_mean = np.mean(g)*scale_value
-        r_mean = np.mean(r)*scale_value
-        sliding_window(bgr_values[0], b_mean)
-        sliding_window(bgr_values[1], g_mean)
-        sliding_window(bgr_values[2], r_mean)
-
-        assert len(bgr_values[0]) == len(bgr_values[1]) and len(
-            bgr_values[1]) == len(bgr_values[2])
+        for i in range(3):
+            color_channel = opflowimg[:, :, i].mean()
+            color_channel = color_channel*scale_value
+            sliding_window(bgr_values[i], color_channel)
 
         bounce_detected_in_window = detect_bounce_pattern(bgr_values)
         bounce_detected = bounce_detected | bounce_detected_in_window
@@ -356,45 +388,21 @@ def compute_flow_and_mask_video(input_video_path, model, output_video_path, show
                 cv2.putText(frame, "BOUNCE DETECTED!", (280, 28),
                             cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
 
-            cv2.putText(opflowimg, "r %2.f, " % r_mean + "g %2.f, " % g_mean + "b %2.f" %
-                        b_mean, (280, 28), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
-            ax.clear()
-            ax.plot(bgr_values[0], color='blue')
-            ax.plot(bgr_values[1], color='green')
-            ax.plot(bgr_values[2], color='red')
-            ax.set_ylim(0, 200)
-            fig.canvas.draw()
-            img = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-            img = img.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-
-            frame = cv2.resize(frame, (640, 640))
-            opflowimg = cv2.resize(opflowimg, (640, 640))
-            img = cv2.resize(img, (640, 640))
-            output_frame = cv2.hconcat([frame, opflowimg, img])
-
-            if show_img:
-                if key == ord('p'):  # Use 'p' to pause and resume the video playback
-                    while True:
-                        key2 = cv2.waitKey(1) or 0xff
-                        cv2.imshow('Win', output_frame)
-                        if key2 == ord('p') or key2 == 27:
-                            break
-
-                cv2.imshow('Win', output_frame)
+            cv2.putText(opflowimg, "r %2.f, " % bgr_values[2][-1] + "g %2.f, " % bgr_values[1][-1] + "b %2.f" %
+                        bgr_values[0][-1], (280, 28), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
+            img = plot_graphs_and_create_img(ax, fig, bgr_values)
+            output_frame = hconcat_frames([frame, opflowimg, img])
 
             if output_video is not None:
                 output_video.write(output_frame)
 
-            if key == 27:
+            if show_img and play_pause(output_frame, key) == False:
                 break
-
-        framecount = framecount + 1
 
     cap.release()
     if output_video is not None:
-        print("Output video released.")
         output_video.release()
+        print("Output video released.")
 
     return bounce_detected
 
@@ -403,11 +411,17 @@ def get_arguments():
     parser = argparse.ArgumentParser(
         description='Takes an input video and detects bounce violations.')
 
-    parser.add_argument('--input_video', type=str, default='', const="",
+    parser.add_argument('--input_video', type=str, default=None, const="",
                         nargs='?', help='Input video path.')
 
-    parser.add_argument('--output', type=str, default=None, const="",
+    parser.add_argument('--output_video', type=str, default=None, const="",
                         nargs='?', help='Output video path')
+
+    parser.add_argument('--input_dir', type=str, default=None, const="",
+                        nargs='?', help='Input folder containing mp4 videos.')
+
+    parser.add_argument('--output_dir', type=str, default=None, const="",
+                        nargs='?', help='Output folder path.')
 
     parser.add_argument("--show_img", type=str2bool, nargs='?',
                         const=True, default=False,
@@ -420,9 +434,29 @@ def main(args):
     print(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
     model = YOLO('yolov8x-seg.pt')
     model.fuse()
-    print(compute_flow_and_mask_video(input_video_path=args.input_video,
-                                      model=model, output_video_path=args.output,
-                                      show_img=args.show_img))
+
+    if args.input_video is not None:
+        print(compute_flow_and_mask_video(input_video_path=args.input_video,
+                                          model=model, output_video_path=args.output_video,
+                                          show_img=args.show_img))
+    elif args.input_dir is not None:
+        if args.output_dir is not None:
+            if not os.path.isdir(args.output_dir):
+                os.mkdir(args.output_dir)
+
+        for file in os.listdir(args.input_dir):
+            if(file.endswith('.mp4')):
+                filename = os.path.splitext(file)[0]
+                input_video_path = os.path.join(args.input_dir, file)
+                output_video_path = os.path.join(
+                    args.output_dir, filename + "_output.mp4")
+
+                print("Processing: ", input_video_path)
+                pred = compute_flow_and_mask_video(input_video_path=input_video_path,
+                                            model=model, output_video_path=output_video_path, show_img=args.show_img)
+                print("Done!")
+
+        print("Processed all files!")
 
 
 if __name__ == '__main__':
