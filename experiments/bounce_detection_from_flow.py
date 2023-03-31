@@ -37,10 +37,6 @@ def combine_images(imgs):
 
 
 def process_combined_img(frame, threshold_val=5):
-    # Remove noise by thresholding and then perform erosion and dilation.
-    # frame[frame <= 15] = 0
-
-    # Sets the color of all the points inside the detected contours to their mean value and increases gamma
     frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     _, threshold = cv2.threshold(
         frame_gray, threshold_val, 255, cv2.THRESH_BINARY)
@@ -62,7 +58,6 @@ def detect_bounce_from_flow(input_video_path, output_video_path, show_img=False,
     output_video = None
     bounce_detected = False
     success = True
-    # scale_value = 20
 
     if output_video_path is not None:
         print('Output at: ', output_video_path)
@@ -72,10 +67,7 @@ def detect_bounce_from_flow(input_video_path, output_video_path, show_img=False,
 
     window_size = 15
     bgr_values = [np.zeros(window_size, dtype=np.float32) for _ in range(3)]
-
     sliding_img_window = np.zeros((window_size, 640, 640, 3), dtype=np.uint8)
-
-    print(sliding_img_window.shape)
 
     if show_img or output_video:
         fig = plt.figure()
@@ -90,12 +82,14 @@ def detect_bounce_from_flow(input_video_path, output_video_path, show_img=False,
         if process_optical_flow:
             opflowimg = process_flow(opflowimg)
 
+        """
         sliding_window(sliding_img_window, cv2.resize(opflowimg, (640, 640)))
         combined_img = combine_images(sliding_img_window)
-        # process_flow(combined_img)
+        process_flow(combined_img)
         process_combined_img(combined_img)
         cv2.imwrite('test_combined/combined_img_' +
                     str(framecount) + ".png", combined_img)
+        """
 
         for i in range(3):
             color_channel = opflowimg[:, :, i].mean()
@@ -106,13 +100,6 @@ def detect_bounce_from_flow(input_video_path, output_video_path, show_img=False,
         bounce_detected = bounce_detected | bounce_detected_in_window
 
         if show_img or output_video:
-            # if bounce_detected_in_window:
-            #     cv2.putText(opflowimg, "BOUNCE DETECTED!", (200, 28),
-            #                 cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
-
-            # cv2.putText(opflowimg, "r %2.f, " % bgr_values[2][-1] + "g %2.f, " % bgr_values[1][-1] + "b %2.f" %
-            #             bgr_values[0][-1], (280, 28), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
-
             img = plot_graphs_and_create_img(ax, fig, bgr_values)
             output_frame = hconcat_frames([opflowimg, img])
 

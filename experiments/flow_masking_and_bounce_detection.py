@@ -113,8 +113,8 @@ def scale_contour(cnt, CONTOUR_SCALE_X=1, CONTOUR_SCALE_Y=1):
     """Scales a counter in both X and Y direction by a factor of CONTOUR_SCALE_X and CONTOUR_SCALE_Y respectively"""
     M = cv2.moments(cnt.astype(np.float32))
 
-    cx = M['m10']/M['m00']
-    cy = M['m01']/M['m00']
+    cx = M['m10']/max(M['m00'],1e-10)
+    cy = M['m01']/max(M['m00'],1e-10)
 
     cnt_norm = cnt - [cx, cy]
     cnt_scaled = np.array([[x*CONTOUR_SCALE_X, y*CONTOUR_SCALE_Y]
@@ -145,7 +145,7 @@ def get_masks(frames: List[np.array], model, classes=[0, 58], scale_contours=Fal
                 if box.cls in classes:
                     segment[:, 0] *= shape_x
                     segment[:, 1] *= shape_y
-                    if scale_contour:
+                    if scale_contours:
                         segment = scale_contour(segment)
                     ctr = np.array(segment).reshape(
                         (-1, 1, 2)).astype(np.int32)
@@ -346,7 +346,6 @@ def compute_flow_and_mask_video(input_video_path, model, output_video_path, show
     if output_video_path is not None:
         print('Output at: ', output_video_path)
         framerate = int(cap.get(cv2.CAP_PROP_FPS))
-        # cv2.VideoWriter_fourcc(*'DIVX')
         output_video = cv2.VideoWriter(
             output_video_path, cv2.VideoWriter_fourcc('a', 'v', 'c', '1'), framerate, (1920, 640))  # NOTE: This VideoWriter may not work in linux environments
 
@@ -453,7 +452,7 @@ def main(args):
 
                 print("Processing: ", input_video_path)
                 pred = compute_flow_and_mask_video(input_video_path=input_video_path,
-                                            model=model, output_video_path=output_video_path, show_img=args.show_img)
+                                                   model=model, output_video_path=output_video_path, show_img=args.show_img)
                 print("Done!")
 
         print("Processed all files!")
