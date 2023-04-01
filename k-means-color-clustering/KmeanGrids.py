@@ -14,6 +14,7 @@ from computeOpticalFlowModule import ComputeOpticalFLow
 
 from sklearn.cluster import KMeans
 from faiss_kmeans import FaissKMeans
+import matplotlib.pyplot as plt
 
 outputVideosDict={}
 
@@ -113,6 +114,7 @@ def drawGridCells(frame,grid_params):
             grid_roi = frame[y1:y2, x1:x2]
             outputVideosDict[cell_idx].write(grid_roi)
 
+
             cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 255, 255), 1)
             text = f"{cell_idx}"
 
@@ -134,7 +136,8 @@ def drawGridCells(frame,grid_params):
 def initializeOutputVideoWriters(grid_params,videoFPS,inputVideoSize):
 
     num_cells=grid_params['cols']*grid_params['rows']
-    fourcc = cv2.VideoWriter_fourcc('h', '2', '6', '4')
+    fourcc = cv2.VideoWriter_fourcc('m', 'p', '4', 'v')
+
     video_size=( int(inputVideoSize[0] / grid_params['cols']),int(inputVideoSize[1] / grid_params['rows']) )
     print(video_size)
 
@@ -212,6 +215,7 @@ def process_video(inputVideoFile,cell_width,cell_height,method="KMeans"):
     
     # Load the video 
     cap = cv2.VideoCapture(inputVideoFile)
+
     
     number_of_videoFrames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     frameNum = 1
@@ -230,6 +234,7 @@ def process_video(inputVideoFile,cell_width,cell_height,method="KMeans"):
     csvFilePath="OutCSV/"+str(inputVideoFile).split('.')[0]+".csv"
 
     initializeOutputVideoWriters(grid_params,cap.get(cv2.CAP_PROP_FPS),(int(cap.get(3)), int(cap.get(4))))
+    cv2.namedWindow("Image", cv2.WINDOW_NORMAL)
 
     while(cap.isOpened()):
 
@@ -238,6 +243,8 @@ def process_video(inputVideoFile,cell_width,cell_height,method="KMeans"):
         ret, frame_rgb = cap.read()
         
         if not ret: break
+
+        frame=frame_rgb.copy()
 
         frame_optical = compflow.compute(frame_rgb)
 
