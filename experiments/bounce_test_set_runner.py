@@ -71,7 +71,7 @@ def main(args):
         print("Processing file number: ", index, " named:", row['Video_Name'])
 
         input_video_path = os.path.join(
-            args.clips_root_folder, row['Video_Name'] + "_output.mp4")
+            args.clips_root_folder, row['Video_Name'] + ".mp4")
         output_video_path = None
         if args.output_videos:
             output_video_path = os.path.join(
