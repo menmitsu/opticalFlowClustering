@@ -6,6 +6,17 @@ import os
 import pandas as pd
 import json
 
+class NumpyEncoder(json.JSONEncoder):
+    """ Special json encoder for numpy types """
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        elif isinstance(obj, np.floating):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return json.JSONEncoder.default(self, obj)
+
 
 def str2bool(v: str):
     """Convert a string representation of truth to true (1) or false (0).
@@ -69,8 +80,9 @@ def create_eval_metric_csv(labels, preds, output_path=''):
     results_df.to_csv(output_csv_path, index=False)
 
     output_json_path = os.path.join(output_path, 'report.json')
+    print(output_json_path)
     with open(output_json_path, 'w+', encoding='utf-8') as f:
-        json.dump(eval_dict, f, ensure_ascii=False, indent=4)
+        json.dump(eval_dict, f, ensure_ascii=False, indent=4, cls=NumpyEncoder)
 
 
 def main(args):

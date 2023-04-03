@@ -239,7 +239,7 @@ def detect_bounce_pattern(bgr_values):
 
         b_peak_idxs_after_g = filter_peaks(g_max_index, extrema_idxs[0])
 
-        if b_peak_idxs_after_g.size > 0 and g_max_val - b_value_at_g > 20 and g_max_val > 30 and r_value_at_g > 25:
+        if b_peak_idxs_after_g.size > 0 and g_max_val - b_value_at_g > 20 and g_max_val > 30 and r_value_at_g > 20:
 
             max_b_peak_idx = b_peak_idxs_after_g[np.argmax(
                 bgr_values[0][b_peak_idxs_after_g])]
