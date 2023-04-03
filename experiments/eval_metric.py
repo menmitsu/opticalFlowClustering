@@ -49,6 +49,29 @@ def get_eval_metrics(labels, preds):
     return eval_dict
 
 
+def create_eval_metric_csv(labels, preds, output_path=''):
+    eval_dict = get_eval_metrics(labels, preds)
+    overall_accuracy = eval_dict['overall_report']['accuracy']
+    macro_avg = eval_dict['overall_report']['macro avg']
+
+    results_dict = {'combination': 'Third_iteration', 'overall_accuracy': [], '0_accuracy': [
+    ], '1_accuracy': [], 'macro_precision': [], 'macro_recall': [], 'macro_f1-score': []}
+    results_dict['overall_accuracy'].append(overall_accuracy)
+    results_dict['0_accuracy'].append(eval_dict['0']['accuracy'])
+    results_dict['1_accuracy'].append(eval_dict['1']['accuracy'])
+    results_dict['macro_precision'].append(macro_avg['precision'])
+    results_dict['macro_recall'].append(macro_avg['recall'])
+    results_dict['macro_f1-score'].append(macro_avg['f1-score'])
+
+    output_csv_path = os.path.join(output_path, 'eval_metrics.csv')
+    results_df = pd.DataFrame(results_dict)
+    results_df.to_csv(output_csv_path, index=False)
+
+    output_json_path = os.path.join(output_path, 'report.json')
+    with open(output_json_path, 'w+', encoding='utf-8') as f:
+        json.dump(eval_dict, f, ensure_ascii=False, indent=4)
+
+
 def main(args):
     df = pd.read_csv(args.csv)
     labels = []
@@ -61,23 +84,7 @@ def main(args):
         labels.append(row['labels'])
         preds.append(row['preds'])
 
-    eval_dict = get_eval_metrics(labels, preds)
-    overall_accuracy = eval_dict['overall_report']['accuracy']
-    macro_avg = eval_dict['overall_report']['macro avg']
-    weighted_avg = eval_dict['overall_report']['weighted avg']
-
-    results_dict = {'combination': 'Third_iteration', 'overall_accuracy': [], '0_accuracy': [
-    ], '1_accuracy': [], 'macro_precision': [], 'macro_recall': [], 'macro_f1-score': []}
-
-    results_dict['overall_accuracy'].append(overall_accuracy)
-    results_dict['0_accuracy'].append(eval_dict['0']['accuracy'])
-    results_dict['1_accuracy'].append(eval_dict['1']['accuracy'])
-    results_dict['macro_precision'].append(macro_avg['precision'])
-    results_dict['macro_recall'].append(macro_avg['recall'])
-    results_dict['macro_f1-score'].append(macro_avg['f1-score'])
-
-    results_df = pd.DataFrame(results_dict)
-    results_df.to_csv('eval_metric.csv', index=False)
+    create_eval_metric_csv(labels, preds)
 
 
 if __name__ == '__main__':

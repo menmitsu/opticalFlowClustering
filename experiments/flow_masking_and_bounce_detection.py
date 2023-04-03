@@ -113,8 +113,8 @@ def scale_contour(cnt, CONTOUR_SCALE_X=1, CONTOUR_SCALE_Y=1):
     """Scales a counter in both X and Y direction by a factor of CONTOUR_SCALE_X and CONTOUR_SCALE_Y respectively"""
     M = cv2.moments(cnt.astype(np.float32))
 
-    cx = M['m10']/max(M['m00'],1e-10)
-    cy = M['m01']/max(M['m00'],1e-10)
+    cx = M['m10']/max(M['m00'], 1e-10)
+    cy = M['m01']/max(M['m00'], 1e-10)
 
     cnt_norm = cnt - [cx, cy]
     cnt_scaled = np.array([[x*CONTOUR_SCALE_X, y*CONTOUR_SCALE_Y]

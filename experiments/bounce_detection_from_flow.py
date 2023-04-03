@@ -44,12 +44,13 @@ def process_combined_img(frame, threshold_val=5):
         threshold, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     for contour in contours:
-        cv2.drawContours(frame, [contour], -1, (0,255,0), 2)
+        cv2.drawContours(frame, [contour], -1, (0, 255, 0), 2)
         x, y, w, h = cv2.boundingRect(contour)
         # Draw the bounding rectangle
         cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 0, 255), 2)
 
     return frame
+
 
 def detect_bounce_from_flow(input_video_path, output_video_path, show_img=False, scale_value=20, process_optical_flow=True):
     filename = os.path.splitext(os.path.basename(input_video_path))[0]
@@ -58,6 +59,7 @@ def detect_bounce_from_flow(input_video_path, output_video_path, show_img=False,
     output_video = None
     bounce_detected = False
     success = True
+    adjust_for_encoding = True
 
     if output_video_path is not None:
         print('Output at: ', output_video_path)
@@ -94,6 +96,8 @@ def detect_bounce_from_flow(input_video_path, output_video_path, show_img=False,
         for i in range(3):
             color_channel = opflowimg[:, :, i].mean()
             color_channel = color_channel*scale_value
+            if adjust_for_encoding and color_channel != 0:
+                color_channel = color_channel + 5
             sliding_window(bgr_values[i], color_channel)
 
         bounce_detected_in_window = detect_bounce_pattern(bgr_values)
@@ -127,21 +131,21 @@ def get_arguments():
                         nargs='?', help='Input optical flow video path.')
 
     parser.add_argument('--output_video', type=str, default=None, const="",
-                        nargs='?', help='Output video path')
+                        nargs='?', help='Output video path. None for no output video.')
 
     parser.add_argument('--input_dir', type=str, default=None, const="",
                         nargs='?', help='Input folder containing mp4 optical flow videos.')
 
     parser.add_argument('--output_dir', type=str, default=None, const="",
-                        nargs='?', help='Output folder path.')
+                        nargs='?', help='Output folder path. None for no output videos.')
 
     parser.add_argument("--show_img", type=str2bool, nargs='?',
                         const=True, default=False,
-                        help="Whether to show processed frames.")
+                        help="Whether to show processed frames. False by default.")
 
     parser.add_argument("--process_optical_flow", type=str2bool, nargs='?',
-                        const=True, default=False,
-                        help="Whether to show processed frames.")
+                        const=True, default=True,
+                        help="Whether to show processed frames. True by default.")
 
     return parser.parse_args()
 
@@ -176,7 +180,7 @@ def main(args):
                         print('Output at: ', output_video_path)
 
                     pred = detect_bounce_from_flow(
-                        input_video_path=filepath, output_video_path=output_video_path, show_img=args.show_img, scale_value=1, process_optical_flow=args.process_optical_flow)
+                        input_video_path=filepath, output_video_path=output_video_path, show_img=args.show_img, process_optical_flow=args.process_optical_flow)
 
                     video_names.append(output_filename)
                     preds.append(1 if pred else 0)

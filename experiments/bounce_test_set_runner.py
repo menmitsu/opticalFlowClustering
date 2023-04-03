@@ -1,19 +1,11 @@
 from sklearn.metrics import classification_report
-from sklearn.metrics import confusion_matrix
 from flow_masking_and_bounce_detection import compute_flow_and_mask_video
+from bounce_detection_from_flow import detect_bounce_from_flow
 from typing import List
-import faiss
-from sklearn.cluster import KMeans
-import matplotlib.pyplot as plt
-import numpy as np
-import cv2
-import torch
 import argparse
 import os
 import pandas as pd
-import matplotlib
-matplotlib.use("Agg")
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+from eval_metric import create_eval_metric_csv
 
 
 def str2bool(v: str):
@@ -49,22 +41,28 @@ def get_arguments():
                         const=True, default=False,
                         help="Whether to also output processed videos.")
 
+    parser.add_argument("--flow_input", type=str2bool, nargs='?',
+                        const=True, default=False,
+                        help="Whether the input videos are flow videos.")
+
     return parser.parse_args()
 
 
 def main(args):
-    print(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
-    model = YOLO('yolov8x-seg.pt')
-    model.fuse()
+    model = None
+    if args.flow_input == False:
+        print(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+        model = YOLO('yolov8x-seg.pt')
+        model.fuse()
+
+    if args.output_folder is not None:
+        if not os.path.isdir(args.output_folder):
+            os.mkdir(args.output_folder)
 
     df = pd.read_csv(args.test_set_csv)
     video_name = []
     labels = []
     preds = []
-
-    if args.output_folder is not None:
-        if not os.path.isdir(args.output_folder):
-            os.mkdir(args.output_folder)
 
     for index, row in df.iterrows():
         if pd.isnull(row['Label']) or pd.isnull(row['Video_Name']):
@@ -73,14 +71,20 @@ def main(args):
         print("Processing file number: ", index, " named:", row['Video_Name'])
 
         input_video_path = os.path.join(
-            args.clips_root_folder, row['Video_Name'] + ".mp4")
+            args.clips_root_folder, row['Video_Name'] + "_output.mp4")
         output_video_path = None
         if args.output_videos:
             output_video_path = os.path.join(
                 args.output_folder, row['Video_Name'] + "_output.mp4")
 
-        pred = compute_flow_and_mask_video(
-            input_video_path=input_video_path, model=model, output_video_path=output_video_path, show_img=False)
+        pred = None
+        if args.flow_input:
+            pred = detect_bounce_from_flow(
+                input_video_path=input_video_path, output_video_path=output_video_path, show_img=False, process_optical_flow=True)
+
+        else:
+            pred = compute_flow_and_mask_video(
+                input_video_path=input_video_path, model=model, output_video_path=output_video_path, show_img=False)
 
         if output_video_path is not None:
             print('Output video stored at: ', output_video_path)
@@ -89,7 +93,6 @@ def main(args):
         labels.append(1 if row['Label'] == 'Yes' else 0)
         preds.append(1 if pred else 0)
 
-    print(confusion_matrix(labels, preds))
     print(classification_report(labels, preds, digits=4))
 
     if args.output_folder is not None:
@@ -98,6 +101,7 @@ def main(args):
         results_df = pd.DataFrame(
             {"video_name": video_name, "labels": labels, "preds": preds})
         results_df.to_csv(output_results_csv_path, index=False)
+        create_eval_metric_csv(labels, preds, args.output_folder)
 
 
 if __name__ == '__main__':
