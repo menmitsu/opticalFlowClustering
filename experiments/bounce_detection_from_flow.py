@@ -145,7 +145,7 @@ def get_arguments():
 
     parser.add_argument("--process_optical_flow", type=str2bool, nargs='?',
                         const=True, default=True,
-                        help="Whether to show processed frames. True by default.")
+                        help="Whether to process extracted optical flow.")
 
     return parser.parse_args()
 

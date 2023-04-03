@@ -1,7 +1,4 @@
 from typing import List
-import faiss
-from sklearn.cluster import KMeans
-import matplotlib.pyplot as plt
 from ultralytics import YOLO
 import numpy as np
 import cv2
@@ -9,50 +6,29 @@ import torch
 import argparse
 import os
 import pandas as pd
-import matplotlib
 from flow_masking_and_bounce_detection import get_masks
 from flow_masking_and_bounce_detection import create_mask
 from flow_masking_and_bounce_detection import process_frame
-
-matplotlib.use("Agg")
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+from flow_masking_and_bounce_detection import ComputeOpticalFLow
 
 
-class ComputeOpticalFLow:
-    def __init__(self, firstframe):
-        self.firstframe = firstframe
-        self.width = self.firstframe.shape[1]
-        self.height = self.firstframe.shape[0]
-
-        self.outputImg = np.zeros([self.height, 2*self.width, 3],
-                                  dtype=self.firstframe.dtype)
-        self.mask = np.zeros_like(self.firstframe)
-        self.mask[..., 1] = 255
-        self.prev_gray = cv2.cvtColor(self.firstframe, cv2.COLOR_BGR2GRAY)
-
-    def compute(self, frame):
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        flow = cv2.calcOpticalFlowFarneback(self.prev_gray, gray,
-                                            None,
-                                            0.5, 3, 15, 3, 5, 1.2, 0)
-
-        # Computes the magnitude and angle of the 2D vectors
-        magnitude, angle = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-
-        # Sets image hue according to the optical flow direction
-        self.mask[..., 0] = angle * 180 / np.pi / 2
-
-        # Sets image value according to the optical flow magnitude (normalized)
-        self.mask[..., 2] = cv2.normalize(
-            magnitude, None, 0, 255, cv2.NORM_MINMAX)
-
-        rgb = cv2.cvtColor(self.mask, cv2.COLOR_HSV2BGR)
-        self.prev_gray = gray
-
-        return rgb
+def str2bool(v: str):
+    """Convert a string representation of truth to true (1) or false (0).
+    True values are 'y', 'yes', 't', 'true', 'on', and '1'; false values
+    are 'n', 'no', 'f', 'false', 'off', and '0'.  Raises error if v is
+    anything else.
+    """
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1', 'on'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0', 'off'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
 
 
-def compute_flow_and_mask_video(input_video_path, model, output_video_path, show_img=False, process_flow=False):
+def extract_flow_and_mask_video(input_video_path, model, output_video_path, process_flow=False, mask_flow=True):
     filename = os.path.splitext(os.path.basename(input_video_path))[0]
     cap = cv2.VideoCapture(input_video_path)
     framecount = 1
@@ -77,15 +53,14 @@ def compute_flow_and_mask_video(input_video_path, model, output_video_path, show
 
         key = cv2.waitKey(1) & 0xff
         frame = process_frame(frame, resolution, mask)
-
         opflowimg = compflow.compute(frame)
-        masks = get_masks([frame], model)[0]
-        cv2.drawContours(opflowimg, masks, -1, (0, 0, 0), cv2.FILLED)
+
+        if mask_flow and model is not None:
+            masks = get_masks([frame], model)[0]
+            cv2.drawContours(opflowimg, masks, -1, (0, 0, 0), cv2.FILLED)
+
         if process_flow:
             opflowimg = process_flow(opflowimg)
-
-        if show_img:
-            cv2.imshow('Win', opflowimg)
 
         if output_video is not None:
             output_video.write(opflowimg)
@@ -108,13 +83,24 @@ def get_arguments():
     parser.add_argument('--output_dir', type=str, default=None, const="",
                         nargs='?', help='Output folder path for the extracted flow videos.')
 
+    parser.add_argument("--mask_flow", type=str2bool, nargs='?',
+                        const=True, default=True,
+                        help="Whether to mask output optical flow using yolo segmentation model.")
+
+    parser.add_argument("--process_optical_flow", type=str2bool, nargs='?',
+                        const=True, default=False,
+                        help="Whether to process extracted optical flow.")
+
     return parser.parse_args()
 
 
 def main(args):
-    print(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
-    model = YOLO('yolov8x-seg.pt')
-    model.fuse()
+    model = None
+    if args.mask_flow:
+        print(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
+        model = YOLO('yolov8x-seg.pt')
+        model.fuse()
+    
     if not os.path.isdir(args.output_dir):
         os.mkdir(args.output_dir)
 
@@ -126,8 +112,8 @@ def main(args):
                 args.output_dir, filename + "_flow.mp4")
 
             print("Processing: ", input_video_path)
-            compute_flow_and_mask_video(input_video_path=input_video_path,
-                                        model=model, output_video_path=output_video_path, show_img=False)
+            extract_flow_and_mask_video(input_video_path=input_video_path,
+                                        model=model, output_video_path=output_video_path, process_flow=args.process_optical_flow, mask_flow=args.mask_flow)
             print("Done!")
 
     print("Processed all files!")
