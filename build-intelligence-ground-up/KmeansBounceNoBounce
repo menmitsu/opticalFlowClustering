@@ -1,0 +1,20 @@
+import pandas as pd
+from sklearn.cluster import KMeans
+
+# Load the data from the two CSV files
+bounce_data = pd.read_csv("bounce_combined.csv")
+nobounce_data = pd.read_csv("nobounce_combined.csv")
+
+# Extract the feature vectors from each row
+X_bounce = bounce_data.iloc[:, 2:].values
+X_nobounce = nobounce_data.iloc[:, 2:].values
+
+# Combine the two sets of feature vectors
+X = np.concatenate((X_bounce, X_nobounce), axis=0)
+
+# Perform k-means clustering with k=2 (one cluster for each label)
+kmeans = KMeans(n_clusters=2).fit(X)
+
+# Print the labels assigned to each data point
+labels = kmeans.labels_
+print(labels)
