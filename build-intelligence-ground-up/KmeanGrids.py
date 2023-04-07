@@ -13,7 +13,6 @@ import math
 from computeOpticalFlowModule import ComputeOpticalFLow
 
 from sklearn.cluster import KMeans
-from faiss_kmeans import FaissKMeans
 import matplotlib.pyplot as plt
 
 outputVideosDict={}
