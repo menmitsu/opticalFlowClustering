@@ -1,6 +1,7 @@
 import os
 import sys
 import subprocess
+from generateVectorsFromVideo import processVideo
 
 def process_file(file_path,csv_file):
     
@@ -14,7 +15,7 @@ def find_optical_mp4_files(folder,csv_file):
             if '_optical.mp4' in file:
                 file_path = os.path.join(root, file)
                 mp4_files.append(file_path+"\n")
-                process_file(file_path,csv_file)
+                processVideo(file_path,csv_file)
     return mp4_files
 
 if __name__ == '__main__':
