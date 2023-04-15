@@ -131,6 +131,23 @@ def get_xyxy_bboxes(frame, area_threshold=5000, threshold_val=1):
     return xyxy_bboxes_list
 
 
+def update_bytetracker_and_get_detections(byte_tracker, xyxy_bboxes, frame):
+    detections = Detections(
+        xyxy=np.asarray(xyxy_bboxes).reshape(-1, 4),
+        confidence=np.ones(len(xyxy_bboxes), dtype=np.float),
+        class_id=np.zeros(len(xyxy_bboxes), dtype=np.int)
+    )
+    tracks = byte_tracker.update(output_results=detections2boxes(
+        detections=detections), img_info=frame.shape, img_size=frame.shape)
+    tracker_id = match_detections_with_tracks(
+        detections=detections, tracks=tracks)
+    detections.tracker_id = np.array(tracker_id)
+    tracker_mask = np.array(
+        [tracker_id is not None for tracker_id in detections.tracker_id], dtype=bool)
+    detections.filter(mask=tracker_mask, inplace=True)
+    return detections
+
+
 def extract_flow_and_mask_video(input_video_path, model, output_video_path, process_optical_flow=False, mask_flow=True, show_img=False):
     filename = os.path.splitext(os.path.basename(input_video_path))[0]
     cap = cv2.VideoCapture(input_video_path)
@@ -166,57 +183,41 @@ def extract_flow_and_mask_video(input_video_path, model, output_video_path, proc
         key = cv2.waitKey(1) & 0xff
         frame = process_frame(frame, resolution, mask)
 
-        # fgmask = fgbg.apply(frame)
-        # fgmask = cv2.threshold(fgmask, 250, 255, cv2.THRESH_BINARY)[1]
         opflowimg = compflow.compute(frame)
 
         if mask_flow and model is not None:
             masks = get_masks([frame], model)[0]
             cv2.drawContours(opflowimg, masks, -1, (0, 0, 0), cv2.FILLED)
-            # cv2.drawContours(fgmask, masks, -1, (0, 0, 0), cv2.FILLED)
 
         if process_optical_flow:
             opflowimg = process_flow(opflowimg)
 
-        # cv2.imshow('bgs', fgmask)
         sliding_window(sliding_img_window, opflowimg)
         combined_img = combine_images(sliding_img_window)
         combined_img = process_combined_img(combined_img)
         xyxy_bboxes = get_xyxy_bboxes(combined_img)
 
         for tracker_id in list(cv_trackers.keys()):
-            # deleting trackers which have not been updated for a long time
-            if framecount - cv_trackers[tracker_id]['last_updated'] > 25:
+            if framecount - cv_trackers[tracker_id]['last_updated'] > 25: # deleting trackers which have not been updated for a long time
                 del cv_trackers[tracker_id]
 
         for tracker_id in cv_trackers:
             (tracker_success, bbox) = cv_trackers[tracker_id]['tracker'].update(
                 frame)
             if tracker_success:
-                p1 = (int(bbox[0]), int(bbox[1]))
+                p1 = (int(bbox[0]), int(bbox[1])) 
                 p2 = (int(bbox[0] + bbox[2]), int(bbox[1] + bbox[3]))
                 cv2.rectangle(frame, p1, p2, (0, 0, 255), thickness=2)
                 cv2.rectangle(combined_img, p1, p2, (0, 0, 255), thickness=2)
 
-        detections = Detections(
-            xyxy=np.asarray(xyxy_bboxes).reshape(-1, 4),
-            confidence=np.ones(len(xyxy_bboxes), dtype=np.float),
-            class_id=np.zeros(len(xyxy_bboxes), dtype=np.int)
-        )
-        tracks = byte_tracker.update(output_results=detections2boxes(
-            detections=detections), img_info=frame.shape, img_size=frame.shape)
-        tracker_id = match_detections_with_tracks(
-            detections=detections, tracks=tracks)
-        detections.tracker_id = np.array(tracker_id)
-        tracker_mask = np.array(
-            [tracker_id is not None for tracker_id in detections.tracker_id], dtype=bool)
-        detections.filter(mask=tracker_mask, inplace=True)
+        detections = update_bytetracker_and_get_detections(
+            byte_tracker, xyxy_bboxes, frame)
 
         for xyxy, confidence, class_id, tracker_id in detections:
             if tracker_id is None:
                 continue
             cv_trackers[tracker_id] = {
-                'tracker': OPENCV_OBJECT_TRACKERS['kcf'](), 'last_updated': framecount}
+                'tracker': OPENCV_OBJECT_TRACKERS['kcf'](), 'last_updated': framecount} # initializing a tracker for each tracker_id
             x1, y1, x2, y2 = xyxy
             cv_trackers[tracker_id]['tracker'].init(
                 frame, (x1, y1, x2-x1, y2-y1))
