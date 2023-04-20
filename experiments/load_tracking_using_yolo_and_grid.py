@@ -1,3 +1,4 @@
+import pandas as pd
 from typing import List
 from ultralytics import YOLO
 import numpy as np
@@ -25,6 +26,17 @@ OPENCV_OBJECT_TRACKERS = {"csrt": cv2.TrackerCSRT_create,
                           # "medianflow": cv2.TrackerMedianFlow_create,
                           # "mosse": cv2.TrackerMOSSE_create
                           }
+
+
+class BboxVelocity:
+    def __init__(self, x, y, dt=1):
+        self.x = x / dt  # component along x direction
+        self.y = y / dt  # component along y direction
+        self.magnitude = (x*x + y*y)**0.5
+        self.dt = dt
+
+    def str(self):
+        return f'{self.x}, {self.y}, {self.magnitude:.2f}'
 
 
 @torch.no_grad()
@@ -136,7 +148,26 @@ def mask_frame_using_grids(opflowimg, frame, grid_n=20, threshold_val=20):
     return masked_frame, mask
 
 
-def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0.1, output_video_path: str = None, track_points='bbox') -> int:
+def centroid_xywh_bbox(bbox):
+    # find centroid for bbox in x, y, w, h format
+    return [(2*bbox[0] + bbox[2]) // 2, (2*bbox[1] + bbox[3]) // 2]
+
+
+def calculate_velocity(current_bbox_dict, prev_bbox_dict):
+    velocity_dict = {}
+    for tracker_id in current_bbox_dict:
+        if tracker_id in prev_bbox_dict:
+            current_centroid = centroid_xywh_bbox(
+                current_bbox_dict[tracker_id]['bbox'])
+            prev_centroid = centroid_xywh_bbox(
+                prev_bbox_dict[tracker_id]['bbox'])
+            velocity_dict[tracker_id] = BboxVelocity(
+                x=current_centroid[0] - prev_centroid[0], y=current_centroid[1] - prev_centroid[1])
+
+    return velocity_dict
+
+
+def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0.1, output_video_path: str = None, track_points='bbox', show_img=False) -> int:
     cap = cv2.VideoCapture(input_video_path)
     success = True
     framerate = int(cap.get(cv2.CAP_PROP_FPS))
@@ -163,7 +194,7 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
 
     tracker = Tracker(
         distance_function=distance_function,
-        initialization_delay=1,
+        initialization_delay=3,
         hit_counter_max=5,
         filter_factory=FilterPyKalmanFilterFactory(),
         distance_threshold=distance_threshold,
@@ -172,6 +203,12 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
         reid_distance_threshold=1,
         reid_hit_counter_max=500,
     )
+
+    prev_bbox_dict = {}
+    max_speed = 0
+    max_x = 0
+    max_y = 0
+    rough_throw_detected = False
 
     while success:
         success, frame = cap.read()
@@ -182,8 +219,7 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
         frame = process_frame(frame, resolution, mask=None)
         opflowimg = compflow.compute(frame)
         masked_frame, grid_mask = mask_frame_using_grids(
-            opflowimg, frame, grid_n=10, threshold_val=10)
-        cv2.imshow('grid_mask', grid_mask)
+            opflowimg, frame, grid_n=10, threshold_val=5)
 
         results = model(masked_frame, verbose=False)
         filtered_conf_idx = np.array(
@@ -192,15 +228,15 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
 
         for tracker_id in list(cv_trackers.keys()):
             # Deleting trackers that have not been updated in a while
-            if framecount - cv_trackers[tracker_id]['last_updated'] > 5:
+            if framecount - cv_trackers[tracker_id]['last_updated'] > 3:
                 del cv_trackers[tracker_id]
 
-        bbox_list = {}
+        bbox_dict = {}
         for tracker_id in cv_trackers:
             (tracker_success, bbox) = cv_trackers[tracker_id]['tracker'].update(
                 frame)
             if tracker_success:
-                bbox_list[tracker_id] = {'bbox': bbox, 'pred': True}
+                bbox_dict[tracker_id] = {'bbox': bbox, 'pred': True}
 
         detections = yolo_detections_to_norfair_detections(
             results[0].boxes, track_points=track_points)
@@ -216,7 +252,7 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
             w = int(p2[0] - p1[0])
             h = int(p2[1] - p1[1])
             tracker_id = int(obj.id)
-            bbox_list[tracker_id] = {
+            bbox_dict[tracker_id] = {
                 'bbox': [p1[0], p1[1], w, h], 'pred': False}
             if w <= 4 or h <= 4:  # Skipping bounding boxes, which are very small. Having a very small width or height could raise an exception from OPENCV_TRACKERS
                 continue
@@ -235,38 +271,58 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
                 cv_trackers[tracker_id] = {
                     'tracker': OPENCV_OBJECT_TRACKERS['csrt'](), 'last_updated': framecount}
                 [x1, y1, x2, y2] = [int(i) for i in box.xyxy[0]]
-                bbox_list[tracker_id] = {
+                bbox_dict[tracker_id] = {
                     'bbox': [x1, y1, x2-x1, y2-y1], 'pred': False}
                 cv_trackers[tracker_id]['tracker'].init(
                     frame, (x1, y1, x2-x1, y2-y1))
         """
 
-        for tracker_id in bbox_list:
-            bbox = bbox_list[tracker_id]['bbox']
+        velocity_dict = calculate_velocity(bbox_dict, prev_bbox_dict)
+        prev_bbox_dict = bbox_dict.copy()
+
+        for tracker_id in bbox_dict:
+            bbox = bbox_dict[tracker_id]['bbox']
             bbox_color = (0, 0, 255)  # red bboxes are bboxes from yolo model
-            if bbox_list[tracker_id]['pred']:
+            if bbox_dict[tracker_id]['pred']:
                 # blue bboxes are predicted bboxes from tracker (since no bbox was generated for this tracker_id by yolo model.)
                 bbox_color = (255, 0, 0)
             p1 = (int(bbox[0]), int(bbox[1]))
             p2 = (int(bbox[0] + bbox[2]), int(bbox[1] + bbox[3]))
             cv2.putText(frame, str(
                 tracker_id), (p1[0], p1[1]), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
+
+            if tracker_id in velocity_dict:
+                max_speed = max(max_speed, velocity_dict[tracker_id].magnitude)
+                max_x = max(abs(max_x), velocity_dict[tracker_id].x)
+                max_y = max(abs(max_y), velocity_dict[tracker_id].y)
+                if velocity_dict[tracker_id].magnitude >= 31:
+                    rough_throw_detected = True
+                if rough_throw_detected:
+                    cv2.putText(frame, 'Rough Throw Detected!', (5, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
+
+                cv2.putText(frame, velocity_dict[tracker_id].str(
+                ), (p2[0], p1[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255,), 2, 2)
             cv2.rectangle(frame, p1, p2, bbox_color, thickness=2)
-            cv2.rectangle(masked_frame, p1, p2, bbox_color, thickness=2)
+            # cv2.rectangle(masked_frame, p1, p2, bbox_color, thickness=2)
 
-        res_plot = results[0].plot()
-        output_frame = hconcat_frames([frame, res_plot, opflowimg])
-        if output_video is not None:
-            output_video.write(output_frame)
+        if show_img or output_video is not None:
+            res_plot = results[0].plot()
+            cv2.putText(frame, f'{max_x}, {max_y}, {max_speed:.2f}', (450, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255,), 4, 2)
+            output_frame = hconcat_frames([frame, res_plot, opflowimg])
+            if output_video is not None:
+                output_video.write(output_frame)
 
-        if play_pause(output_frame, key) == False:
-            break
+            if show_img and play_pause(output_frame, key) == False:
+                break
 
+        print(f'{max_x}, {max_y}, {max_speed}')
         framecount = framecount + 1
 
     cap.release()
     if output_video is not None:
         output_video.release()
+    return rough_throw_detected
 
 
 def get_arguments():
@@ -288,6 +344,10 @@ def get_arguments():
     parser.add_argument('--model_path', type=str, default='', const="",
                         nargs='?', help='Path to yolov8 model.')
 
+    parser.add_argument("--show_img", type=str2bool, nargs='?',
+                        const=True, default=False,
+                        help="Whether to show processed frames.")
+
     return parser.parse_args()
 
 
@@ -297,13 +357,16 @@ def main(args):
     model.fuse()
 
     if args.input_video is not None:
-        load_tracking_using_yolo_and_grid(input_video_path=args.input_video,
-                                          model=model, output_video_path=args.output_video)
+        print(load_tracking_using_yolo_and_grid(input_video_path=args.input_video,
+                                          model=model, output_video_path=args.output_video, show_img=args.show_img))
 
     elif args.input_dir is not None:
         if args.output_dir is not None:
             if not os.path.isdir(args.output_dir):
                 os.mkdir(args.output_dir)
+
+        filename_list = []
+        rough_throw_detected_list = []
 
         for file in os.listdir(args.input_dir):
             if(file.endswith('.mp4')):
@@ -315,11 +378,22 @@ def main(args):
                         args.output_dir, filename + ".mp4")
 
                 print("Processing: ", input_video_path)
-                load_tracking_using_yolo_and_grid(
+                rough_throw_detected = load_tracking_using_yolo_and_grid(
                     input_video_path=input_video_path, model=model, output_video_path=output_video_path)
+
+                filename_list.append(file)
+                rough_throw_detected_list.append(
+                    1 if rough_throw_detected else 0)
                 print("Done!")
 
         print("Processed all files!")
+        print(rough_throw_detected_list)
+        if args.output_dir is not None:
+            output_results_csv_path = os.path.join(
+                args.output_dir, 'results.csv')
+            results_df = pd.DataFrame(
+                {"filename": filename_list, "rough_throw_detected": rough_throw_detected_list})
+            results_df.to_csv(output_results_csv_path, index=False)
 
 
 if __name__ == '__main__':
