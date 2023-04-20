@@ -304,7 +304,6 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
                 cv2.putText(frame, velocity_dict[tracker_id].str(
                 ), (p2[0], p1[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255,), 2, 2)
             cv2.rectangle(frame, p1, p2, bbox_color, thickness=2)
-            # cv2.rectangle(masked_frame, p1, p2, bbox_color, thickness=2)
 
         if show_img or output_video is not None:
             res_plot = results[0].plot()
@@ -327,7 +326,9 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
 
 def get_arguments():
     parser = argparse.ArgumentParser(
-        description='Takes an input video and counts number of detected boxes passing through a region.')
+        description='Takes an input video and detects cfl throw violation.')
+
+    """For running on a single video, use --input_video and --output_video flags."""
 
     parser.add_argument('--input_video', type=str, default=None, const="",
                         nargs='?', help='Input video path.')
@@ -335,11 +336,13 @@ def get_arguments():
     parser.add_argument('--output_video', type=str, default=None, const="",
                         nargs='?', help='Output video path')
 
+    """For running on a number of videos, use --input_dir and --output_dir flags."""
+
     parser.add_argument('--input_dir', type=str, default=None, const="",
-                        nargs='?', help='Input video path.')
+                        nargs='?', help='Input video directory.')
 
     parser.add_argument('--output_dir', type=str, default=None, const="",
-                        nargs='?', help='Output video path')
+                        nargs='?', help='Output video directory.')
 
     parser.add_argument('--model_path', type=str, default='', const="",
                         nargs='?', help='Path to yolov8 model.')
@@ -358,7 +361,7 @@ def main(args):
 
     if args.input_video is not None:
         print(load_tracking_using_yolo_and_grid(input_video_path=args.input_video,
-                                          model=model, output_video_path=args.output_video, show_img=args.show_img))
+                                                model=model, output_video_path=args.output_video, show_img=args.show_img))
 
     elif args.input_dir is not None:
         if args.output_dir is not None:
@@ -387,13 +390,14 @@ def main(args):
                 print("Done!")
 
         print("Processed all files!")
-        print(rough_throw_detected_list)
+        print("Outputs: ", rough_throw_detected_list)
         if args.output_dir is not None:
             output_results_csv_path = os.path.join(
                 args.output_dir, 'results.csv')
             results_df = pd.DataFrame(
                 {"filename": filename_list, "rough_throw_detected": rough_throw_detected_list})
             results_df.to_csv(output_results_csv_path, index=False)
+            print('Generated results.csv!')
 
 
 if __name__ == '__main__':
