@@ -1,3 +1,4 @@
+import time
 import pandas as pd
 from typing import List
 from ultralytics import YOLO
@@ -11,7 +12,7 @@ from flow_masking_and_bounce_detection import ComputeOpticalFLow
 from flow_masking_and_bounce_detection import play_pause
 from flow_masking_and_bounce_detection import hconcat_frames
 import norfair
-from norfair import Detection, Tracker
+from norfair import Detection, Tracker, get_cutout
 from norfair.filter import FilterPyKalmanFilterFactory
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
@@ -58,6 +59,17 @@ def str2bool(v: str):
 
 def center(points):
     return [np.mean(np.array(points), axis=0)]
+
+
+def get_hist(image):
+    hist = cv2.calcHist(
+        [cv2.cvtColor(image, cv2.COLOR_BGR2Lab)],
+        [0, 1],
+        None,
+        [128, 128],
+        [0, 256, 0, 256],
+    )
+    return cv2.normalize(hist, hist).flatten()
 
 
 def embedding_distance(matched_not_init_trackers, unmatched_trackers):
@@ -179,7 +191,7 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
         print('Output at: ', output_video_path)
         framerate = int(cap.get(cv2.CAP_PROP_FPS))
         output_video = cv2.VideoWriter(
-            output_video_path, cv2.VideoWriter_fourcc('a', 'v', 'c', '1'), framerate, (1920, 640))
+            output_video_path, cv2.VideoWriter_fourcc('a', 'v', 'c', '1'), framerate, (1920, 640))  # Note: This codec may not work on Linux systems.
 
     success, firstframe = cap.read()
     firstframe = process_frame(firstframe, resolution, mask=None)
@@ -194,9 +206,9 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
 
     tracker = Tracker(
         distance_function=distance_function,
-        initialization_delay=3,
+        initialization_delay=4,
         hit_counter_max=5,
-        filter_factory=FilterPyKalmanFilterFactory(),
+        filter_factory=FilterPyKalmanFilterFactory(R=8.0, Q=0.08),
         distance_threshold=distance_threshold,
         past_detections_length=15,
         reid_distance_function=embedding_distance,
@@ -209,13 +221,13 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
     max_x = 0
     max_y = 0
     rough_throw_detected = False
+    skip_frames = 0
 
     while success:
         success, frame = cap.read()
         if not success:
             break
 
-        key = cv2.waitKey(1) & 0xff
         frame = process_frame(frame, resolution, mask=None)
         opflowimg = compflow.compute(frame)
         masked_frame, grid_mask = mask_frame_using_grids(
@@ -240,6 +252,23 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
 
         detections = yolo_detections_to_norfair_detections(
             results[0].boxes, track_points=track_points)
+
+        # Skip frames when too many bboxes are detected.
+        if len(detections) > 3:
+            skip_frames = 5
+
+        """
+        Improves results when detections are of different colors. May not work well for our case.
+
+        for detection in detections:
+            for detection in detections:
+                cut = get_cutout(detection.points, frame)
+                if cut.shape[0] > 0 and cut.shape[1] > 0:
+                    detection.embedding = get_hist(cut)
+                else:
+                    detection.embedding = None
+        """
+
         tracked_objects = tracker.update(detections=detections)
         for obj in tracked_objects:
             bbox = obj.estimate
@@ -254,7 +283,7 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
             tracker_id = int(obj.id)
             bbox_dict[tracker_id] = {
                 'bbox': [p1[0], p1[1], w, h], 'pred': False}
-            if w <= 4 or h <= 4:  # Skipping bounding boxes, which are very small. Having a very small width or height could raise an exception from OPENCV_TRACKERS
+            if w <= 5 or h <= 5:  # Skipping tracker initialization for bounding boxes, which are very small. Having a very small width or height could also raise an exception from OPENCV_TRACKERS
                 continue
             cv_trackers[tracker_id] = {
                 'tracker': OPENCV_OBJECT_TRACKERS['csrt'](), 'last_updated': framecount}
@@ -262,8 +291,7 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
                 frame, (p1[0], p1[1], w, h))
 
         """
-        Use this when using bytetracker or bot-sort from ultralytics library
-
+        Use this when using bytetracker or bot-sort from the ultralytics library
 
         for box in results[0].boxes:
             if box.is_track:
@@ -279,15 +307,22 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
 
         velocity_dict = calculate_velocity(bbox_dict, prev_bbox_dict)
         prev_bbox_dict = bbox_dict.copy()
+        rough_throw_detected_in_frame = False
 
         for tracker_id in bbox_dict:
             bbox = bbox_dict[tracker_id]['bbox']
+            p1 = (int(bbox[0]), int(bbox[1]))
+            p2 = (int(bbox[0] + bbox[2]), int(bbox[1] + bbox[3]))
+            w = int(p2[0] - p1[0])
+            h = int(p2[1] - p1[1])
+
+            if w <= 5 or h <= 5:  # Skipping bounding boxes, which are very small.
+                continue
+
             bbox_color = (0, 0, 255)  # red bboxes are bboxes from yolo model
             if bbox_dict[tracker_id]['pred']:
                 # blue bboxes are predicted bboxes from tracker (since no bbox was generated for this tracker_id by yolo model.)
                 bbox_color = (255, 0, 0)
-            p1 = (int(bbox[0]), int(bbox[1]))
-            p2 = (int(bbox[0] + bbox[2]), int(bbox[1] + bbox[3]))
             cv2.putText(frame, str(
                 tracker_id), (p1[0], p1[1]), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
 
@@ -295,9 +330,11 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
                 max_speed = max(max_speed, velocity_dict[tracker_id].magnitude)
                 max_x = max(abs(max_x), velocity_dict[tracker_id].x)
                 max_y = max(abs(max_y), velocity_dict[tracker_id].y)
-                if velocity_dict[tracker_id].magnitude >= 31:
+                if velocity_dict[tracker_id].magnitude >= 31 and skip_frames == 0:
                     rough_throw_detected = True
-                if rough_throw_detected:
+                    rough_throw_detected_in_frame = True
+                    # green bboxes are bboxes for which a violation was detected.
+                    bbox_color = (0, 255, 0)
                     cv2.putText(frame, 'Rough Throw Detected!', (5, 30),
                                 cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
 
@@ -305,18 +342,22 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
                 ), (p2[0], p1[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255,), 2, 2)
             cv2.rectangle(frame, p1, p2, bbox_color, thickness=2)
 
+        print(f'{max_x}, {max_y}, {max_speed}')
         if show_img or output_video is not None:
+            key = cv2.waitKey(1) & 0xff
             res_plot = results[0].plot()
             cv2.putText(frame, f'{max_x}, {max_y}, {max_speed:.2f}', (450, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255,), 4, 2)
             output_frame = hconcat_frames([frame, res_plot, opflowimg])
             if output_video is not None:
                 output_video.write(output_frame)
-
             if show_img and play_pause(output_frame, key) == False:
                 break
+            if rough_throw_detected_in_frame:
+                cv2.waitKey(2000)
 
-        print(f'{max_x}, {max_y}, {max_speed}')
         framecount = framecount + 1
+        if skip_frames > 0:
+            skip_frames = skip_frames - 1
 
     cap.release()
     if output_video is not None:
@@ -334,15 +375,15 @@ def get_arguments():
                         nargs='?', help='Input video path.')
 
     parser.add_argument('--output_video', type=str, default=None, const="",
-                        nargs='?', help='Output video path')
+                        nargs='?', help='Output video path. Use None to not generate a output video.')
 
-    """For running on a number of videos, use --input_dir and --output_dir flags."""
+    """For running on multiple videos, use --input_dir and --output_dir flags."""
 
     parser.add_argument('--input_dir', type=str, default=None, const="",
                         nargs='?', help='Input video directory.')
 
     parser.add_argument('--output_dir', type=str, default=None, const="",
-                        nargs='?', help='Output video directory.')
+                        nargs='?', help='Output video directory. Use None to not generate the output videos.')
 
     parser.add_argument('--model_path', type=str, default='', const="",
                         nargs='?', help='Path to yolov8 model.')
@@ -401,5 +442,7 @@ def main(args):
 
 
 if __name__ == '__main__':
+    start_time = time.time()
     args = get_arguments()
     main(args)
+    print("--- %s seconds ---" % (time.time() - start_time))
