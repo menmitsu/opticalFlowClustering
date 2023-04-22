@@ -179,6 +179,13 @@ def calculate_velocity(current_bbox_dict, prev_bbox_dict):
     return velocity_dict
 
 
+def centroid_in_roi(bbox, roi):
+    centroid = centroid_xywh_bbox(bbox)
+    if roi[0] <= centroid[0] <= roi[2] and roi[1] <= centroid[1] <= roi[3]:
+        return True
+    return False
+
+
 def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0.1, output_video_path: str = None, track_points='bbox', show_img=False) -> int:
     cap = cv2.VideoCapture(input_video_path)
     success = True
@@ -316,30 +323,31 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
             w = int(p2[0] - p1[0])
             h = int(p2[1] - p1[1])
 
-            if w <= 5 or h <= 5:  # Skipping bounding boxes, which are very small.
-                continue
-
-            bbox_color = (0, 0, 255)  # red bboxes are bboxes from yolo model
+            # red bboxes are bboxes from norfair tracker
+            bbox_color = (0, 0, 255)
             if bbox_dict[tracker_id]['pred']:
-                # blue bboxes are predicted bboxes from tracker (since no bbox was generated for this tracker_id by yolo model.)
+                # blue bboxes are predicted bboxes from OPENCV_TRACKERS (since no bbox was generated for this tracker_id by norfair.)
                 bbox_color = (255, 0, 0)
             cv2.putText(frame, str(
                 tracker_id), (p1[0], p1[1]), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
 
-            if tracker_id in velocity_dict:
-                max_speed = max(max_speed, velocity_dict[tracker_id].magnitude)
-                max_x = max(abs(max_x), velocity_dict[tracker_id].x)
-                max_y = max(abs(max_y), velocity_dict[tracker_id].y)
-                if velocity_dict[tracker_id].magnitude >= 31 and skip_frames == 0:
-                    rough_throw_detected = True
-                    rough_throw_detected_in_frame = True
-                    # green bboxes are bboxes for which a violation was detected.
-                    bbox_color = (0, 255, 0)
-                    cv2.putText(frame, 'Rough Throw Detected!', (5, 30),
-                                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
+            # Skipping bounding boxes, which are very small or are inside the roi
+            if not (w <= 5 or h <= 5 or centroid_in_roi(bbox, roi=[0, 0, 250, 430])):
+                if skip_frames == 0 and tracker_id in velocity_dict:
+                    max_speed = max(
+                        max_speed, velocity_dict[tracker_id].magnitude)
+                    max_x = max(abs(max_x), velocity_dict[tracker_id].x)
+                    max_y = max(abs(max_y), velocity_dict[tracker_id].y)
+                    if velocity_dict[tracker_id].magnitude >= 31 and velocity_dict[tracker_id].y > 0:
+                        rough_throw_detected = True
+                        rough_throw_detected_in_frame = True
+                        # green bboxes are bboxes for which a violation was detected.
+                        bbox_color = (0, 255, 0)
+                        cv2.putText(frame, 'Rough Throw Detected!', (5, 30),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
 
-                cv2.putText(frame, velocity_dict[tracker_id].str(
-                ), (p2[0], p1[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255,), 2, 2)
+                    cv2.putText(frame, velocity_dict[tracker_id].str(
+                    ), (p2[0], p1[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255,), 2, 2)
             cv2.rectangle(frame, p1, p2, bbox_color, thickness=2)
 
         print(f'{max_x}, {max_y}, {max_speed}')
