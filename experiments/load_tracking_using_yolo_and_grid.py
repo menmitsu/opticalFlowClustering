@@ -188,7 +188,6 @@ def centroid_in_roi(bbox, roi):
 
 def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0.1, output_video_path: str = None, track_points='bbox', show_img=False) -> int:
     cap = cv2.VideoCapture(input_video_path)
-    success = True
     framerate = int(cap.get(cv2.CAP_PROP_FPS))
     output_video = None
     resolution = (640, 640)
@@ -196,39 +195,30 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
 
     if output_video_path is not None:
         print('Output at: ', output_video_path)
-        framerate = int(cap.get(cv2.CAP_PROP_FPS))
         output_video = cv2.VideoWriter(
             output_video_path, cv2.VideoWriter_fourcc('a', 'v', 'c', '1'), framerate, (1920, 640))  # Note: This codec may not work on Linux systems.
 
     success, firstframe = cap.read()
     firstframe = process_frame(firstframe, resolution, mask=None)
     compflow = ComputeOpticalFLow(firstframe)
-    cv_trackers = {}
-    distance_function = "iou" if track_points == "bbox" else "euclidean"
-    distance_threshold = (
-        DISTANCE_THRESHOLD_BBOX
-        if track_points == "bbox"
-        else DISTANCE_THRESHOLD_CENTROID
-    )
-
     tracker = Tracker(
-        distance_function=distance_function,
+        distance_function="iou" if track_points == "bbox" else "euclidean",
         initialization_delay=4,
         hit_counter_max=5,
-        filter_factory=FilterPyKalmanFilterFactory(R=8.0, Q=0.08),
-        distance_threshold=distance_threshold,
+        filter_factory=FilterPyKalmanFilterFactory(R=16.0, Q=0.04),
+        distance_threshold=(DISTANCE_THRESHOLD_BBOX if track_points == "bbox"
+                            else DISTANCE_THRESHOLD_CENTROID),
         past_detections_length=15,
         reid_distance_function=embedding_distance,
         reid_distance_threshold=1,
         reid_hit_counter_max=500,
     )
-
+    cv_trackers = {}
     prev_bbox_dict = {}
-    max_speed = 0
-    max_x = 0
-    max_y = 0
+    min_x, max_x, min_y, max_y, max_speed = 0, 0, 0, 0, 0
     rough_throw_detected = False
     skip_frames = 0
+    min_w, min_h = 15, 15
 
     while success:
         success, frame = cap.read()
@@ -244,6 +234,12 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
         filtered_conf_idx = np.array(
             results[0].boxes.conf.cpu().numpy() >= conf_limit)
         results[0].boxes = results[0].boxes[filtered_conf_idx]
+
+        for box in results[0].boxes:  # Skipping frames when a shrink bag is detected
+            if model.names[int(box.cls)] == 'shrink':
+                skip_frames = 25
+                print(f'Shrink bag detected, skipping next {skip_frames} frames.')
+                break
 
         for tracker_id in list(cv_trackers.keys()):
             # Deleting trackers that have not been updated in a while
@@ -290,7 +286,7 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
             tracker_id = int(obj.id)
             bbox_dict[tracker_id] = {
                 'bbox': [p1[0], p1[1], w, h], 'pred': False}
-            if w <= 5 or h <= 5:  # Skipping tracker initialization for bounding boxes, which are very small. Having a very small width or height could also raise an exception from OPENCV_TRACKERS
+            if w <= min_w or h <= min_h:  # Skipping tracker initialization for bounding boxes, which are very small. Having a very small width or height could also raise an exception from OPENCV_TRACKERS
                 continue
             cv_trackers[tracker_id] = {
                 'tracker': OPENCV_OBJECT_TRACKERS['csrt'](), 'last_updated': framecount}
@@ -328,29 +324,35 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
             if bbox_dict[tracker_id]['pred']:
                 # blue bboxes are predicted bboxes from OPENCV_TRACKERS (since no bbox was generated for this tracker_id by norfair.)
                 bbox_color = (255, 0, 0)
-            cv2.putText(frame, str(
-                tracker_id), (p1[0], p1[1]), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
 
             # Skipping bounding boxes, which are very small or are inside the roi
-            if not (w <= 5 or h <= 5 or centroid_in_roi(bbox, roi=[0, 0, 250, 430])):
+            if not (w <= min_w or h <= min_w or centroid_in_roi(bbox, roi=[0, 0, 250, 430])):
                 if skip_frames == 0 and tracker_id in velocity_dict:
                     max_speed = max(
                         max_speed, velocity_dict[tracker_id].magnitude)
-                    max_x = max(abs(max_x), velocity_dict[tracker_id].x)
-                    max_y = max(abs(max_y), velocity_dict[tracker_id].y)
-                    if velocity_dict[tracker_id].magnitude >= 31 and velocity_dict[tracker_id].y > 0:
+                    min_x = min(min_x, velocity_dict[tracker_id].x)
+                    max_x = max(max_x, velocity_dict[tracker_id].x)
+                    min_y = min(min_y, velocity_dict[tracker_id].y)
+                    max_y = max(max_y, velocity_dict[tracker_id].y)
+
+                    if velocity_dict[tracker_id].magnitude >= 31 and velocity_dict[tracker_id].y >= 0 and velocity_dict[tracker_id].x >= 0:
                         rough_throw_detected = True
                         rough_throw_detected_in_frame = True
                         # green bboxes are bboxes for which a violation was detected.
                         bbox_color = (0, 255, 0)
                         cv2.putText(frame, 'Rough Throw Detected!', (5, 30),
                                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
+                        print('Rough Throw Detected!')
+                        print('W: ', w, 'H: ', h)
 
                     cv2.putText(frame, velocity_dict[tracker_id].str(
                     ), (p2[0], p1[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255,), 2, 2)
+
+            cv2.putText(frame, str(
+                tracker_id), (p1[0], p1[1]), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
             cv2.rectangle(frame, p1, p2, bbox_color, thickness=2)
 
-        print(f'{max_x}, {max_y}, {max_speed}')
+        # print(f'{min_x}, {max_x}, {min_y}, {max_y}, {max_speed}')
         if show_img or output_video is not None:
             key = cv2.waitKey(1) & 0xff
             res_plot = results[0].plot()
@@ -362,6 +364,9 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
                 break
             if rough_throw_detected_in_frame:
                 cv2.waitKey(2000)
+                if output_video is not None:
+                    for i in range(0, 2*framerate):
+                        output_video.write(output_frame)
 
         framecount = framecount + 1
         if skip_frames > 0:
