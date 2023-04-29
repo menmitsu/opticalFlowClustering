@@ -1,3 +1,5 @@
+import json
+from eval_metric import NumpyEncoder
 import time
 import pandas as pd
 from typing import List
@@ -186,7 +188,7 @@ def centroid_in_roi(bbox, roi):
     return False
 
 
-def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0.1, output_video_path: str = None, track_points='bbox', show_img=False) -> int:
+def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0.1, output_video_path: str = None, track_points='bbox', show_img=False, export_trajectory=False) -> int:
     cap = cv2.VideoCapture(input_video_path)
     framerate = int(cap.get(cv2.CAP_PROP_FPS))
     output_video = None
@@ -219,6 +221,7 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
     rough_throw_detected = False
     skip_frames = 0
     min_w, min_h = 15, 15
+    trajectory_dict = {} if export_trajectory else None
 
     while success:
         success, frame = cap.read()
@@ -273,6 +276,7 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
         """
 
         tracked_objects = tracker.update(detections=detections)
+
         for obj in tracked_objects:
             bbox = obj.estimate
             height, width = frame.shape[:2]
@@ -326,8 +330,14 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
                 bbox_color = (255, 0, 0)
 
             # Skipping bounding boxes, which are very small or are inside the roi
-            if not (w <= min_w or h <= min_w or centroid_in_roi(bbox, roi=[0, 0, 250, 430])):
-                if skip_frames == 0 and tracker_id in velocity_dict:
+            if not (skip_frames > 0 or w <= min_w or h <= min_w or centroid_in_roi(bbox, roi=[0, 0, 250, 430])):
+                if trajectory_dict is not None:
+                    if tracker_id not in trajectory_dict:
+                        trajectory_dict[tracker_id] = {
+                            'pred': 0, 'trajectory': []}
+                    trajectory_dict[tracker_id]['trajectory'].append(bbox)
+
+                if tracker_id in velocity_dict:
                     max_speed = max(
                         max_speed, velocity_dict[tracker_id].magnitude)
                     min_x = min(min_x, velocity_dict[tracker_id].x)
@@ -343,7 +353,10 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
                         cv2.putText(frame, 'Rough Throw Detected!', (5, 30),
                                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
                         print('Rough Throw Detected!')
-                        print('W: ', w, 'H: ', h)
+
+                        if trajectory_dict is not None:
+                            assert tracker_id in trajectory_dict
+                            trajectory_dict[tracker_id]['pred'] = 1
 
                     cv2.putText(frame, velocity_dict[tracker_id].str(
                     ), (p2[0], p1[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255,), 2, 2)
@@ -363,7 +376,8 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
             if show_img and play_pause(output_frame, key) == False:
                 break
             if rough_throw_detected_in_frame:
-                cv2.waitKey(2000)
+                if show_img:
+                    cv2.waitKey(2000)
                 if output_video is not None:
                     for i in range(0, 2*framerate):
                         output_video.write(output_frame)
@@ -375,7 +389,11 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
     cap.release()
     if output_video is not None:
         output_video.release()
-    return rough_throw_detected
+
+    if export_trajectory:
+        return rough_throw_detected, trajectory_dict
+    else:
+        return rough_throw_detected
 
 
 def get_arguments():
@@ -395,7 +413,7 @@ def get_arguments():
     parser.add_argument('--input_dir', type=str, default=None, const="",
                         nargs='?', help='Input video directory.')
 
-    parser.add_argument('--output_dir', type=str, default=None, const="",
+    parser.add_argument('--output_dir', type=str, default='', const="",
                         nargs='?', help='Output video directory. Use None to not generate the output videos.')
 
     parser.add_argument('--model_path', type=str, default='', const="",
@@ -405,6 +423,10 @@ def get_arguments():
                         const=True, default=False,
                         help="Whether to show processed frames.")
 
+    parser.add_argument("--export_trajectory", type=str2bool, nargs='?',
+                        const=True, default=False,
+                        help="Whether to export trajectory in json format. Make sure to have a output_dir.")
+
     return parser.parse_args()
 
 
@@ -412,10 +434,28 @@ def main(args):
     print(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
     model = YOLO(args.model_path)
     model.fuse()
+    all_trajectory_dict = {} if args.export_trajectory else None
 
     if args.input_video is not None:
-        print(load_tracking_using_yolo_and_grid(input_video_path=args.input_video,
-                                                model=model, output_video_path=args.output_video, show_img=args.show_img))
+        if args.export_trajectory:
+            result, trajectory_dict = load_tracking_using_yolo_and_grid(
+                input_video_path=args.input_video, model=model, output_video_path=args.output_video, show_img=args.show_img, export_trajectory=args.export_trajectory)
+            print('Result: ', result)
+            if args.output_dir is not None:
+                filename = os.path.splitext(
+                    os.path.basename(args.input_video))[0]
+                all_trajectory_dict[filename] = trajectory_dict
+                output_json_path = os.path.join(
+                    args.output_dir, 'trajectories.json')
+                with open(output_json_path, 'w+', encoding='utf-8') as f:
+                    json.dump(all_trajectory_dict, f,
+                              ensure_ascii=False, indent=4, cls=NumpyEncoder)
+                print('Exported trajectories!')
+
+        else:
+            result = load_tracking_using_yolo_and_grid(input_video_path=args.input_video, model=model,
+                                                       output_video_path=args.output_video, show_img=args.show_img, export_trajectory=args.export_trajectory)
+            print('Result: ', result)
 
     elif args.input_dir is not None:
         if args.output_dir is not None:
@@ -435,8 +475,14 @@ def main(args):
                         args.output_dir, filename + ".mp4")
 
                 print("Processing: ", input_video_path)
-                rough_throw_detected = load_tracking_using_yolo_and_grid(
-                    input_video_path=input_video_path, model=model, output_video_path=output_video_path)
+                if args.export_trajectory:
+                    rough_throw_detected, current_trajectory_dict = load_tracking_using_yolo_and_grid(
+                        input_video_path=input_video_path, model=model, output_video_path=output_video_path, show_img=args.show_img, export_trajectory=args.export_trajectory)
+                    all_trajectory_dict[filename] = current_trajectory_dict
+
+                else:
+                    rough_throw_detected = load_tracking_using_yolo_and_grid(
+                        input_video_path=input_video_path, model=model, output_video_path=output_video_path, show_img=args.show_img, export_trajectory=args.export_trajectory)
 
                 filename_list.append(file)
                 rough_throw_detected_list.append(
@@ -452,6 +498,13 @@ def main(args):
                 {"filename": filename_list, "rough_throw_detected": rough_throw_detected_list})
             results_df.to_csv(output_results_csv_path, index=False)
             print('Generated results.csv!')
+            if args.export_trajectory:
+                output_json_path = os.path.join(
+                    args.output_dir, 'trajectories.json')
+                with open(output_json_path, 'w+', encoding='utf-8') as f:
+                    json.dump(all_trajectory_dict, f,
+                              ensure_ascii=False, indent=4, cls=NumpyEncoder)
+                print('Exported trajectories!')
 
 
 if __name__ == '__main__':
