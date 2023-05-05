@@ -32,17 +32,20 @@ OPENCV_OBJECT_TRACKERS = {"csrt": cv2.TrackerCSRT_create,
 
 
 class BboxVelocity:
-    def __init__(self, x, y, dt=1):
+    def __init__(self, x=0, y=0, z=0, dt=1):
         self.x = x / dt  # component along x direction
         self.y = y / dt  # component along y direction
-        self.magnitude = (x*x + y*y)**0.5
+        self.z = z / dt
         self.dt = dt
+        self.magnitude = (x*x + y*y + z*z)**0.5
 
     def str(self):
-        return f'{self.x}, {self.y}, {self.magnitude:.2f}'
+        return f'{self.x}, {self.y}, {self.magnitude:.1f}'
+
+    def str_z(self):
+        return f'{self.x}, {self.y}, {self.z:.1f}, {self.magnitude:.1f}'
 
 
-@torch.no_grad()
 def str2bool(v: str):
     """Convert a string representation of truth to true (1) or false (0).
     True values are 'y', 'yes', 't', 'true', 'on', and '1'; false values
@@ -137,7 +140,7 @@ def yolo_detections_to_norfair_detections(
     return norfair_detections
 
 
-def mask_frame_using_grids(opflowimg, frame, grid_n=20, threshold_val=20):
+def mask_frame_using_grids(opflowimg, frame, grid_n=20, threshold_val=20, return_mask=False):
     height, width = opflowimg.shape[:2]
     M = height // grid_n
     N = width // grid_n
@@ -147,7 +150,9 @@ def mask_frame_using_grids(opflowimg, frame, grid_n=20, threshold_val=20):
     _, opflowimg_threshold = cv2.threshold(
         opflowimg_gray, threshold_val, 255, cv2.THRESH_BINARY)
 
-    mask = np.ones_like(frame)*255
+    mask = None
+    if return_mask:
+        mask = np.ones_like(frame)*255
     masked_frame = frame.copy()
 
     for y in range(0, height, M):
@@ -157,7 +162,8 @@ def mask_frame_using_grids(opflowimg, frame, grid_n=20, threshold_val=20):
             tile = opflowimg_threshold[y:y+M, x:x+N]
             if cv2.countNonZero(tile) == 0:
                 masked_frame[y:y+M, x:x+N] = (0, 0, 0)
-                mask[y:y+M, x:x+N] = (0, 0, 0)
+                if mask is not None:
+                    mask[y:y+M, x:x+N] = (0, 0, 0)
 
     return masked_frame, mask
 
@@ -188,12 +194,24 @@ def centroid_in_roi(bbox, roi):
     return False
 
 
-def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0.1, output_video_path: str = None, track_points='bbox', show_img=False, export_trajectory=False) -> int:
+def throw_cfl(input_video_path: str, model, conf_limit=0.1, output_video_path: str = None, track_points='bbox', show_img=False, export_trajectory=False) -> int:
+    """
+    Output format:
+
+    "throw": {
+        "cfl": {
+            "frames": [24, 26, ...],
+            "velocities": [31.5, 36, 43, ...],
+        }
+    }
+
+    """
     cap = cv2.VideoCapture(input_video_path)
     framerate = int(cap.get(cv2.CAP_PROP_FPS))
     output_video = None
     resolution = (640, 640)
     framecount = 0
+    results_dict = {'throw': {'cfl': {'frames': [], 'velocities': []}}}
 
     if output_video_path is not None:
         print('Output at: ', output_video_path)
@@ -230,7 +248,7 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
 
         frame = process_frame(frame, resolution, mask=None)
         opflowimg = compflow.compute(frame)
-        masked_frame, grid_mask = mask_frame_using_grids(
+        masked_frame, _ = mask_frame_using_grids(
             opflowimg, frame, grid_n=10, threshold_val=5)
 
         results = model(masked_frame, verbose=False)
@@ -254,6 +272,7 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
             (tracker_success, bbox) = cv_trackers[tracker_id]['tracker'].update(
                 frame)
             if tracker_success:
+                # bbox format: [x_top_left, y_top_left, width, height]
                 bbox_dict[tracker_id] = {'bbox': bbox, 'pred': True}
 
         detections = yolo_detections_to_norfair_detections(
@@ -320,8 +339,8 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
             bbox = bbox_dict[tracker_id]['bbox']
             p1 = (int(bbox[0]), int(bbox[1]))
             p2 = (int(bbox[0] + bbox[2]), int(bbox[1] + bbox[3]))
-            w = int(p2[0] - p1[0])
-            h = int(p2[1] - p1[1])
+            w = bbox[2]
+            h = bbox[3]
 
             # red bboxes are bboxes from norfair tracker
             bbox_color = (0, 0, 255)
@@ -330,7 +349,7 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
                 bbox_color = (255, 0, 0)
 
             # Skipping bounding boxes, which are very small or are inside the roi
-            if not (skip_frames > 0 or w <= min_w or h <= min_w or centroid_in_roi(bbox, roi=[0, 0, 250, 430])):
+            if not (skip_frames > 0 or w <= min_w or h <= min_h or centroid_in_roi(bbox, roi=[0, 0, 250, 430])):
                 if trajectory_dict is not None:
                     if tracker_id not in trajectory_dict:
                         trajectory_dict[tracker_id] = {
@@ -352,17 +371,21 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
                         bbox_color = (0, 255, 0)
                         cv2.putText(frame, 'Rough Throw Detected!', (5, 30),
                                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
-                        print('Rough Throw Detected!')
+                        print('Rough Throw Detected at frame: ', framecount)
+                        results_dict['throw']['cfl']['frames'].append(
+                            framecount)
+                        results_dict['throw']['cfl']['velocities'].append(
+                            velocity_dict[tracker_id].magnitude)
 
                         if trajectory_dict is not None:
                             assert tracker_id in trajectory_dict
                             trajectory_dict[tracker_id]['pred'] = 1
 
-                    cv2.putText(frame, velocity_dict[tracker_id].str(
-                    ), (p2[0], p1[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255,), 2, 2)
+                    cv2.putText(frame, velocity_dict[tracker_id].str(),
+                                (p2[0], p1[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255,), 2, 2)
 
             cv2.putText(frame, str(
-                tracker_id), (p1[0], p1[1]), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
+                tracker_id), (p1[0], p1[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255,), 4, 2)
             cv2.rectangle(frame, p1, p2, bbox_color, thickness=2)
 
         # print(f'{min_x}, {max_x}, {min_y}, {max_y}, {max_speed}')
@@ -391,9 +414,9 @@ def load_tracking_using_yolo_and_grid(input_video_path: str, model, conf_limit=0
         output_video.release()
 
     if export_trajectory:
-        return rough_throw_detected, trajectory_dict
+        return results_dict, trajectory_dict
     else:
-        return rough_throw_detected
+        return results_dict
 
 
 def get_arguments():
@@ -430,15 +453,23 @@ def get_arguments():
     return parser.parse_args()
 
 
+@torch.no_grad()
 def main(args):
     print(torch.device('cuda' if torch.cuda.is_available() else 'cpu'))
     model = YOLO(args.model_path)
     model.fuse()
     all_trajectory_dict = {} if args.export_trajectory else None
 
+    """
+    TODO:
+
+    Change results generation method when multiple input videos are present.
+
+    """
+
     if args.input_video is not None:
         if args.export_trajectory:
-            result, trajectory_dict = load_tracking_using_yolo_and_grid(
+            result, trajectory_dict = throw_cfl(
                 input_video_path=args.input_video, model=model, output_video_path=args.output_video, show_img=args.show_img, export_trajectory=args.export_trajectory)
             print('Result: ', result)
             if args.output_dir is not None:
@@ -453,8 +484,8 @@ def main(args):
                 print('Exported trajectories!')
 
         else:
-            result = load_tracking_using_yolo_and_grid(input_video_path=args.input_video, model=model,
-                                                       output_video_path=args.output_video, show_img=args.show_img, export_trajectory=args.export_trajectory)
+            result = throw_cfl(input_video_path=args.input_video, model=model,
+                               output_video_path=args.output_video, show_img=args.show_img, export_trajectory=args.export_trajectory)
             print('Result: ', result)
 
     elif args.input_dir is not None:
@@ -476,12 +507,12 @@ def main(args):
 
                 print("Processing: ", input_video_path)
                 if args.export_trajectory:
-                    rough_throw_detected, current_trajectory_dict = load_tracking_using_yolo_and_grid(
+                    rough_throw_detected, current_trajectory_dict = throw_cfl(
                         input_video_path=input_video_path, model=model, output_video_path=output_video_path, show_img=args.show_img, export_trajectory=args.export_trajectory)
                     all_trajectory_dict[filename] = current_trajectory_dict
 
                 else:
-                    rough_throw_detected = load_tracking_using_yolo_and_grid(
+                    rough_throw_detected = throw_cfl(
                         input_video_path=input_video_path, model=model, output_video_path=output_video_path, show_img=args.show_img, export_trajectory=args.export_trajectory)
 
                 filename_list.append(file)
