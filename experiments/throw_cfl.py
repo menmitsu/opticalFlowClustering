@@ -144,7 +144,6 @@ def mask_frame_using_grids(opflowimg, frame, grid_n=20, threshold_val=20, return
     height, width = opflowimg.shape[:2]
     M = height // grid_n
     N = width // grid_n
-    grids = []
 
     opflowimg_gray = cv2.cvtColor(opflowimg, cv2.COLOR_BGR2GRAY)
     _, opflowimg_threshold = cv2.threshold(
@@ -169,32 +168,63 @@ def mask_frame_using_grids(opflowimg, frame, grid_n=20, threshold_val=20, return
 
 
 def centroid_xywh_bbox(bbox):
-    # find centroid for bbox in x, y, w, h format
+    # find centroid for bbox in format: x-top-left, y-top-left, width, height
     return [(2*bbox[0] + bbox[2]) // 2, (2*bbox[1] + bbox[3]) // 2]
 
 
-def calculate_velocity(current_bbox_dict, prev_bbox_dict):
+def combine_coordinates(point1, point2, point1_weight):
+    point2_weight = 1 - point1_weight
+    new_point_x = point1[0] * point1_weight + point2[0] * point2_weight
+    new_point_y = point1[1] * point1_weight + point2[1] * point2_weight
+    return new_point_x, new_point_y
+
+
+def calculate_velocity(current_bbox_dict, prev_bbox_dict, centroid_weight=0):
     velocity_dict = {}
     for tracker_id in current_bbox_dict:
         if tracker_id in prev_bbox_dict:
-            current_centroid = centroid_xywh_bbox(
-                current_bbox_dict[tracker_id]['bbox'])
-            prev_centroid = centroid_xywh_bbox(
-                prev_bbox_dict[tracker_id]['bbox'])
+            """
+            if calculate_using_centroid:
+                current_centroid = centroid_xywh_bbox(
+                    current_bbox_dict[tracker_id]['bbox'])
+                prev_centroid = centroid_xywh_bbox(
+                    prev_bbox_dict[tracker_id]['bbox'])
+                velocity_dict[tracker_id] = BboxVelocity(
+                    x=current_centroid[0] - prev_centroid[0], y=current_centroid[1] - prev_centroid[1])
+            else:
+                curr_bbox = current_bbox_dict[tracker_id]['bbox']
+                prev_bbox = prev_bbox_dict[tracker_id]['bbox']
+                x1, y1 = curr_bbox[0], curr_bbox[1] + curr_bbox[3]
+                x2, y2 = prev_bbox[0], prev_bbox[1] + prev_bbox[3]
+                velocity_dict[tracker_id] = BboxVelocity(x=x1 - x2, y=y1 - y2)
+            """
+            curr_bbox = current_bbox_dict[tracker_id]['bbox']
+            prev_bbox = prev_bbox_dict[tracker_id]['bbox']
+            curr_centroid = centroid_xywh_bbox(curr_bbox)
+            prev_centroid = centroid_xywh_bbox(prev_bbox)
+            x1, y1 = curr_bbox[0], curr_bbox[1] + curr_bbox[3]
+            x2, y2 = prev_bbox[0], prev_bbox[1] + prev_bbox[3]
+
+            # (x1 + curr_centroid[0]) / 2, (y1 + curr_centroid[1]) / 2
+            # (x2 + prev_centroid[0]) / 2, (y2 + prev_centroid[1]) / 2
+            x_comb1, y_comb1 = combine_coordinates(
+                curr_centroid, [x1, y1], centroid_weight)
+            x_comb2, y_comb2 = combine_coordinates(
+                prev_centroid, [x2, y2], centroid_weight)
             velocity_dict[tracker_id] = BboxVelocity(
-                x=current_centroid[0] - prev_centroid[0], y=current_centroid[1] - prev_centroid[1])
+                x=x_comb1 - x_comb2, y=y_comb1 - y_comb2)
 
     return velocity_dict
 
 
-def centroid_in_roi(bbox, roi):
-    centroid = centroid_xywh_bbox(bbox)
+def centroid_in_roi(centroid, roi):
+    # roi format: x-top-left, y-top-left, x-bottom-right, y-bottom-right
     if roi[0] <= centroid[0] <= roi[2] and roi[1] <= centroid[1] <= roi[3]:
         return True
     return False
 
 
-def throw_cfl(input_video_path: str, model, conf_limit=0.1, output_video_path: str = None, track_points='bbox', show_img=False, export_trajectory=False) -> int:
+def throw_cfl(input_video_path: str, model, conf_limit=0.1, output_video_path: str = None, track_points='bbox', show_img=False, export_trajectory=False, centroid_weight=0.2, velocity_threshold=27) -> int:
     """
     Output format:
 
@@ -257,7 +287,7 @@ def throw_cfl(input_video_path: str, model, conf_limit=0.1, output_video_path: s
         results[0].boxes = results[0].boxes[filtered_conf_idx]
 
         for box in results[0].boxes:  # Skipping frames when a shrink bag is detected
-            if model.names[int(box.cls)] == 'shrink':
+            if model.names[int(box.cls)] == 'shrink' and not centroid_in_roi(centroid_xywh_bbox(box.xywh[0]), roi=[0, 0, 300, 430]):
                 skip_frames = 25
                 print(f'Shrink bag detected, skipping next {skip_frames} frames.')
                 break
@@ -331,9 +361,11 @@ def throw_cfl(input_video_path: str, model, conf_limit=0.1, output_video_path: s
                     frame, (x1, y1, x2-x1, y2-y1))
         """
 
-        velocity_dict = calculate_velocity(bbox_dict, prev_bbox_dict)
+        velocity_dict = calculate_velocity(
+            bbox_dict, prev_bbox_dict, centroid_weight=centroid_weight)
         prev_bbox_dict = bbox_dict.copy()
         rough_throw_detected_in_frame = False
+        generate_output_frames = show_img or output_video is not None
 
         for tracker_id in bbox_dict:
             bbox = bbox_dict[tracker_id]['bbox']
@@ -349,14 +381,15 @@ def throw_cfl(input_video_path: str, model, conf_limit=0.1, output_video_path: s
                 bbox_color = (255, 0, 0)
 
             # Skipping bounding boxes, which are very small or are inside the roi
-            if not (skip_frames > 0 or w <= min_w or h <= min_h or centroid_in_roi(bbox, roi=[0, 0, 250, 430])):
+            if not (skip_frames > 0 or w <= min_w or h <= min_h or centroid_in_roi(centroid_xywh_bbox(bbox), roi=[0, 0, 300, 430])):
                 if trajectory_dict is not None:
                     if tracker_id not in trajectory_dict:
                         trajectory_dict[tracker_id] = {
                             'pred': 0, 'trajectory': []}
                     trajectory_dict[tracker_id]['trajectory'].append(bbox)
 
-                if tracker_id in velocity_dict:
+                if tracker_id in velocity_dict and velocity_dict[tracker_id].y >= 0 and velocity_dict[tracker_id].x >= 0:
+
                     max_speed = max(
                         max_speed, velocity_dict[tracker_id].magnitude)
                     min_x = min(min_x, velocity_dict[tracker_id].x)
@@ -364,14 +397,21 @@ def throw_cfl(input_video_path: str, model, conf_limit=0.1, output_video_path: s
                     min_y = min(min_y, velocity_dict[tracker_id].y)
                     max_y = max(max_y, velocity_dict[tracker_id].y)
 
-                    if velocity_dict[tracker_id].magnitude >= 31 and velocity_dict[tracker_id].y >= 0 and velocity_dict[tracker_id].x >= 0:
+                    if velocity_dict[tracker_id].magnitude >= velocity_threshold:
                         rough_throw_detected = True
                         rough_throw_detected_in_frame = True
-                        # green bboxes are bboxes for which a violation was detected.
-                        bbox_color = (0, 255, 0)
-                        cv2.putText(frame, 'Rough Throw Detected!', (5, 30),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
-                        print('Rough Throw Detected at frame: ', framecount)
+
+                        if bbox_color == (0, 0, 255):
+                            # green bboxes are for norfair tracker bboxes for which a violation was detected.
+                            bbox_color = (0, 255, 0)
+                        else:
+                            # yellow bboxes are OPENCV_TRACKERS bboxes for which a violation was detected.
+                            bbox_color = (0, 255, 255)
+
+                        if generate_output_frames:
+                            cv2.putText(frame, 'Rough Throw Detected!', (5, 30),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255,), 4, 2)
+
                         results_dict['throw']['cfl']['frames'].append(
                             framecount)
                         results_dict['throw']['cfl']['velocities'].append(
@@ -381,15 +421,16 @@ def throw_cfl(input_video_path: str, model, conf_limit=0.1, output_video_path: s
                             assert tracker_id in trajectory_dict
                             trajectory_dict[tracker_id]['pred'] = 1
 
-                    cv2.putText(frame, velocity_dict[tracker_id].str(),
-                                (p2[0], p1[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255,), 2, 2)
+                    if generate_output_frames:
+                        cv2.putText(frame, velocity_dict[tracker_id].str(),
+                                    (p2[0], p1[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255,), 2, 2)
 
-            cv2.putText(frame, str(
-                tracker_id), (p1[0], p1[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255,), 4, 2)
-            cv2.rectangle(frame, p1, p2, bbox_color, thickness=2)
+            if generate_output_frames:
+                cv2.putText(frame, str(
+                    tracker_id), (p1[0], p1[1]), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255,), 4, 2)
+                cv2.rectangle(frame, p1, p2, bbox_color, thickness=2)
 
-        # print(f'{min_x}, {max_x}, {min_y}, {max_y}, {max_speed}')
-        if show_img or output_video is not None:
+        if generate_output_frames:
             key = cv2.waitKey(1) & 0xff
             res_plot = results[0].plot()
             cv2.putText(frame, f'{max_x}, {max_y}, {max_speed:.2f}', (450, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255,), 4, 2)
@@ -516,8 +557,10 @@ def main(args):
                         input_video_path=input_video_path, model=model, output_video_path=output_video_path, show_img=args.show_img, export_trajectory=args.export_trajectory)
 
                 filename_list.append(file)
+                rough_throw_detected_in_clip = len(
+                    rough_throw_detected['throw']['cfl']['frames']) > 0
                 rough_throw_detected_list.append(
-                    1 if rough_throw_detected else 0)
+                    1 if rough_throw_detected_in_clip else 0)
                 print("Done!")
 
         print("Processed all files!")
