@@ -16,6 +16,7 @@ from flow_masking_and_bounce_detection import hconcat_frames
 import norfair
 from norfair import Detection, Tracker, get_cutout
 from norfair.filter import FilterPyKalmanFilterFactory
+from concurrent.futures import ThreadPoolExecutor
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 DISTANCE_THRESHOLD_BBOX: float = 1
@@ -40,10 +41,10 @@ class BboxVelocity:
         self.magnitude = (x*x + y*y + z*z)**0.5
 
     def str(self):
-        return f'{self.x}, {self.y}, {self.magnitude:.1f}'
+        return f'{self.x:.1f}, {self.y:.1f}, {self.magnitude:.1f}'
 
     def str_z(self):
-        return f'{self.x}, {self.y}, {self.z:.1f}, {self.magnitude:.1f}'
+        return f'{self.x:.1f}, {self.y:.1f}, {self.z:.1f}, {self.magnitude:.1f}'
 
 
 def str2bool(v: str):
@@ -142,6 +143,7 @@ def yolo_detections_to_norfair_detections(
 
 def mask_frame_using_grids(opflowimg, frame, grid_n=20, threshold_val=20, return_mask=False):
     height, width = opflowimg.shape[:2]
+    f_height, f_width = frame.shape[:2]
     M = height // grid_n
     N = width // grid_n
 
@@ -160,9 +162,13 @@ def mask_frame_using_grids(opflowimg, frame, grid_n=20, threshold_val=20, return
             x1 = x + N
             tile = opflowimg_threshold[y:y+M, x:x+N]
             if cv2.countNonZero(tile) == 0:
-                masked_frame[y:y+M, x:x+N] = (0, 0, 0)
+                y_frame = int(y * (f_height / height))
+                x_frame = int(x * (f_width / width))
+                M_frame = int((y + M) * (f_height / height))
+                N_frame = int((x + N) * (f_width / width))
+                masked_frame[y_frame:M_frame, x_frame:N_frame] = (0, 0, 0)
                 if mask is not None:
-                    mask[y:y+M, x:x+N] = (0, 0, 0)
+                    mask[y_frame:M_frame, x_frame:N_frame] = (0, 0, 0)
 
     return masked_frame, mask
 
@@ -224,7 +230,7 @@ def centroid_in_roi(centroid, roi):
     return False
 
 
-def throw_cfl(input_video_path: str, model, conf_limit=0.1, output_video_path: str = None, track_points='bbox', show_img=False, export_trajectory=False, centroid_weight=0.2, velocity_threshold=27) -> int:
+def throw_cfl(input_video_path: str, model, conf_limit=0.1, output_video_path: str = None, track_points='bbox', show_img=False, export_trajectory=False, centroid_weight=0.2, velocity_threshold=27, opflow_resolution=(320, 320)) -> int:
     """
     Output format:
 
@@ -250,7 +256,7 @@ def throw_cfl(input_video_path: str, model, conf_limit=0.1, output_video_path: s
 
     success, firstframe = cap.read()
     firstframe = process_frame(firstframe, resolution, mask=None)
-    compflow = ComputeOpticalFLow(firstframe)
+    compflow = ComputeOpticalFLow(cv2.resize(firstframe, opflow_resolution))
     tracker = Tracker(
         distance_function="iou" if track_points == "bbox" else "euclidean",
         initialization_delay=4,
@@ -263,7 +269,6 @@ def throw_cfl(input_video_path: str, model, conf_limit=0.1, output_video_path: s
         reid_distance_threshold=1,
         reid_hit_counter_max=500,
     )
-    cv_trackers = {}
     prev_bbox_dict = {}
     min_x, max_x, min_y, max_y, max_speed = 0, 0, 0, 0, 0
     rough_throw_detected = False
@@ -277,7 +282,8 @@ def throw_cfl(input_video_path: str, model, conf_limit=0.1, output_video_path: s
             break
 
         frame = process_frame(frame, resolution, mask=None)
-        opflowimg = compflow.compute(frame)
+        opflowimg = compflow.compute(cv2.resize(frame, opflow_resolution))
+
         masked_frame, _ = mask_frame_using_grids(
             opflowimg, frame, grid_n=10, threshold_val=5)
 
@@ -291,19 +297,6 @@ def throw_cfl(input_video_path: str, model, conf_limit=0.1, output_video_path: s
                 skip_frames = 25
                 print(f'Shrink bag detected, skipping next {skip_frames} frames.')
                 break
-
-        for tracker_id in list(cv_trackers.keys()):
-            # Deleting trackers that have not been updated in a while
-            if framecount - cv_trackers[tracker_id]['last_updated'] > 3:
-                del cv_trackers[tracker_id]
-
-        bbox_dict = {}
-        for tracker_id in cv_trackers:
-            (tracker_success, bbox) = cv_trackers[tracker_id]['tracker'].update(
-                frame)
-            if tracker_success:
-                # bbox format: [x_top_left, y_top_left, width, height]
-                bbox_dict[tracker_id] = {'bbox': bbox, 'pred': True}
 
         detections = yolo_detections_to_norfair_detections(
             results[0].boxes, track_points=track_points)
@@ -326,6 +319,7 @@ def throw_cfl(input_video_path: str, model, conf_limit=0.1, output_video_path: s
 
         tracked_objects = tracker.update(detections=detections)
 
+        bbox_dict = {}
         for obj in tracked_objects:
             bbox = obj.estimate
             height, width = frame.shape[:2]
@@ -339,12 +333,6 @@ def throw_cfl(input_video_path: str, model, conf_limit=0.1, output_video_path: s
             tracker_id = int(obj.id)
             bbox_dict[tracker_id] = {
                 'bbox': [p1[0], p1[1], w, h], 'pred': False}
-            if w <= min_w or h <= min_h:  # Skipping tracker initialization for bounding boxes, which are very small. Having a very small width or height could also raise an exception from OPENCV_TRACKERS
-                continue
-            cv_trackers[tracker_id] = {
-                'tracker': OPENCV_OBJECT_TRACKERS['csrt'](), 'last_updated': framecount}
-            cv_trackers[tracker_id]['tracker'].init(
-                frame, (p1[0], p1[1], w, h))
 
         """
         Use this when using bytetracker or bot-sort from the ultralytics library
@@ -433,7 +421,7 @@ def throw_cfl(input_video_path: str, model, conf_limit=0.1, output_video_path: s
         if generate_output_frames:
             key = cv2.waitKey(1) & 0xff
             res_plot = results[0].plot()
-            cv2.putText(frame, f'{max_x}, {max_y}, {max_speed:.2f}', (450, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255,), 4, 2)
+            cv2.putText(frame, f'{max_x:.1f}, {max_y:.1f}, {max_speed:.1f}', (450, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255,), 4, 2)
             output_frame = hconcat_frames([frame, res_plot, opflowimg])
             if output_video is not None:
                 output_video.write(output_frame)
